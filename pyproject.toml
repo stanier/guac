@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "guac"
+version = "0.1.0"
+requires-python = ">=3.8"
+
+[tool.setuptools.packages.find]
+where = ["."]

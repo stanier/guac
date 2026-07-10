@@ -1,0 +1,16 @@
+{{f["RESET"]}}
+{% if system_guidance is defined and system_guidance %}{{s["GUIDE_SYS_start"]}}{{system_guidance}}{{s["GUIDE_SYS_end"]}}
+{% endif %}{% if organization_guidance is defined and system_guidance %}{{s["GUIDE_ORG_start"]}}{{organization_guidance}}{{s["GUIDE_ORG_end"]}}
+{% endif %}{% if user_guidance is defined and system_guidance %}{{s["GUIDE_USR_start"]}}{{user_guidance}}{{s["GUIDE_USR_end"]}}
+{% endif %}
+{% if task is defined and task %}{{s["TASK_start"]}}{{task}}{{s["TASK_end"]}}
+
+{% endif %}{% for turn in turns %}{% if turn.source == "inference" %}{{s["INFERENCE_start"]}}
+{% endif %}{% for sequence in turn.sequences %}{{s["SEQUENCE_start"]}}
+{{s["LABEL_start"]}}{{sequence.label}}{{s["LABEL_end"]}}
+{{s["MODAL_HINT_start"]}}{{sequence.modality_hint}}{{s["MODAL_HINT_end"]}}
+{{sequence.content}}
+{{s["SEQUENCE_end"]}}
+{% endfor %}{% if turn.source == "inference" %}{{s["INFERENCE_end"]}}
+{% endif %}
+{% endfor %}{% if add_generation_prompt %}{{s["INFERENCE_start"]}}{% endif %}

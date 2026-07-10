@@ -1,0 +1,8 @@
+Transformers        Transformers/4.39.3-gfbf-2023a          Transformers/4.44.0-gfbf-2023b 
+datasets            datasets/3.1.0-foss-2023a
+huggingface_hub     huggingface_hub/0.26.3-GCCcore-12.3.0
+PyTorch             PyTorch/2.1.2-foss-2023a-CUDA-12.1.1
+SentencePiece       SentencePiece/0.2.0-GCC-12.3.0          SentencePiece/0.2.0-GCC-13.2.0
+accelerate                                                  accelerate/1.0.1-foss-2023b
+
+module load Transformers/4.39.3-gfbf-2023a datasets/3.1.0-foss-2023a huggingface_hub/0.26.3-GCCcore-12.3.0 PyTorch/2.1.2-foss-2023a-CUDA-12.1.1 SentencePiece/0.2.0-GCC-12.3.0

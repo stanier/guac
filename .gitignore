@@ -1,0 +1,15 @@
+# Local environment config (copy from site_config.example.yml)
+site_config.yml
+
+# Generated artifacts: checkpoints, datasets, tokenizers
+scratch/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/

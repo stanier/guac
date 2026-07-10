@@ -1,0 +1,116 @@
+# Site Configuration Example
+# Copy this file to site_config.yml and customize for your environment
+#
+# This file contains site-specific settings like data directories, checkpoint paths,
+# and other environment-dependent configurations.
+
+# Data and scratch directories
+directories:
+  # Main scratch directory for all data outputs
+  scratch_dir: "./scratch"
+
+  # Dataset storage (downloaded and generated datasets)
+  datasets:
+    base_dir: "${scratch_dir}/datasets"
+    # HuggingFace dataset cache directory
+    huggingface_cache: "${base_dir}/huggingface_cache"
+    # Custom generated datasets (arithmetic, etc.)
+    generated: "${base_dir}/generated"
+    # Legacy dataset paths (for backward compatibility)
+    arithmetic_simple: "${base_dir}/generated/arithmetic_simple"
+    arithmetic_complex: "${base_dir}/generated/arithmetic_complex"
+
+  # Tokenized dataset cache storage
+  tokenized_datasets:
+    base_dir: "${scratch_dir}/tokenized_datasets"
+    cache_dir: "${base_dir}/cache"
+    # Individual tokenized dataset storage
+    pretraining: "${base_dir}/pretraining"
+    midtraining: "${base_dir}/midtraining"
+    posttraining: "${base_dir}/posttraining"
+    # Legacy paths (for backward compatibility)
+    simple: "${base_dir}/legacy/simple"
+    complex: "${base_dir}/legacy/complex"
+
+  # Trained tokenizer storage
+  tokenizers:
+    base_dir: "${scratch_dir}/tokenizers"
+    # Tokenizers by training approach
+    sentencepiece: "${base_dir}/sentencepiece"
+    character: "${base_dir}/character"
+    custom: "${base_dir}/custom"
+    # Legacy tokenizer paths (for backward compatibility)
+    char_arithmetic: "${base_dir}/legacy/char_arithmetic"
+    general: "${base_dir}/legacy/general"
+
+  # Trained model storage
+  models:
+    base_dir: "${scratch_dir}/models"
+    # Models by training stage
+    pretraining: "${base_dir}/pretraining"
+    midtraining: "${base_dir}/midtraining"
+    posttraining: "${base_dir}/posttraining"
+    # Model checkpoints during training
+    checkpoints: "${base_dir}/checkpoints"
+    # Final trained models
+    final: "${base_dir}/final"
+    # Legacy model paths (for backward compatibility)
+    pretrain_simple: "${base_dir}/legacy/pretrain_simple"
+
+  # Temporary directories for processing
+  temp:
+    base_dir: "${scratch_dir}/temp"
+    tokenizer_training: "${base_dir}/tokenizer_training"
+    data_processing: "${base_dir}/data_processing"
+
+# Environment-specific settings
+environment:
+  # HPC/cluster specific settings
+  use_slurm: false
+  slurm_partition: "gpu"
+
+  # Resource allocation
+  default_gpu_memory: "16GB"
+  max_workers: 4
+
+  # Logging and monitoring
+  log_level: "INFO"
+  enable_wandb: false
+  wandb_project: "guac-arithmetic"
+
+# Site-specific paths (uncomment and customize as needed)
+# paths:
+#   # Custom Python environment
+#   python_env: "/path/to/your/venv"
+#
+#   # Custom CUDA installation
+#   cuda_home: "/usr/local/cuda"
+#
+#   # Network storage mounts
+#   shared_storage: "/mnt/shared"
+#
+#   # Temporary directory for large operations
+#   temp_dir: "/tmp/guac"
+
+# Override settings for different deployment modes
+deployment:
+  mode: "development"  # development, staging, production
+
+  # Development mode settings
+  development:
+    enable_debug: true
+    small_dataset_mode: true
+    checkpoint_frequency: 100
+
+  # Production mode settings
+  production:
+    enable_debug: false
+    small_dataset_mode: false
+    checkpoint_frequency: 500
+
+# Site-specific model defaults (override architecture defaults)
+# model_overrides:
+#   llama:
+#     torch_dtype: "float32"  # Override for older hardware
+#   granite:
+#     attn_implementation: "eager"  # Disable flash attention if not available

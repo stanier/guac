@@ -1,0 +1,2 @@
+#!/usr/bin/env sh
+# module load pandas/1.0.5-foss-2022a-Python-3.10.4 numba/0.56.4-foss-2022a datasets/2.16.1-foss-2022a transformers/4.41.2-foss-2022a-PyTorch-2.1.2-CUDA-12.1.1 bitsandbytes/0.42.0-foss-2022a-PyTorch-2.1.2-CUDA-12.1.1

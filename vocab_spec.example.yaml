@@ -1,0 +1,77 @@
+# vocab_spec.example.yaml
+#
+# Configuration for the hierarchical tokenizer pipeline.
+#
+# Three-stage build:
+#   Stage 1 (core):       Generalist tokenizer seeded with anchor tokens.
+#                         Uses final_training.data for broad coverage.
+#   Stage 2 (partitions): One trainer per domain, each seeded with the full
+#                         core vocab. Only the new tokens each learns are kept.
+#   Stage 3 (final):      Full-size tokenizer seeded with core + all partition
+#                         tokens. Learns the remaining budget from final_training.data.
+#
+# Run:
+#   python -m scripts.training.tokenizer.pipeline --spec vocab_spec.yaml
+#   python -m scripts.training.tokenizer.pipeline --spec vocab_spec.yaml --status
+#   python -m scripts.training.tokenizer.pipeline --spec vocab_spec.yaml --force
+
+vocab_spec:
+
+  # Total vocabulary size of the final tokenizer.
+  # Note: SentencePiece reserves 4 IDs for special tokens (pad=0, bos=1, eos=2, unk=3).
+  # The remaining total_size - 4 slots are split between user_defined_symbols and learned tokens.
+  total_size: 131072   # 128K
+
+  # Vocabulary size for the Stage 1 core tokenizer.
+  # Should be large enough to give good generalist coverage but small enough
+  # that domain partitions still have meaningful budget to contribute.
+  core_size: 16384     # 16K
+
+  # Root directory for all trained artifacts.
+  # Subdirectories: core/, partitions/<name>/, final/, final/hf/
+  output_dir: scratch/tokenizers/partitioned/v1
+
+  # Predefined anchor tokens that are guaranteed to appear in every stage.
+  # File format: one token per line; lines starting with '#' are comments.
+  # Examples: Unicode block coverage, math/code symbols, structural markers.
+  # Leave out the 'anchors' key entirely if you have no predefined tokens.
+  anchors:
+    path: tokens/predefined_anchors.txt
+
+  # Domain partition trainers (Stage 2).
+  # Each partition receives the full core vocab as user_defined_symbols and
+  # may contribute up to 'budget' new tokens to the combined seed vocab.
+  # trainer_data names are passed to load_pretraining_datasets() —
+  # use known names ('wikitext-103', 'openwebtext') or local disk paths.
+  partitions:
+    - name: code
+      trainer_data:
+        - scratch/datasets/downloaded/code_corpus
+      budget: 8192
+
+    - name: math
+      trainer_data:
+        - scratch/datasets/downloaded/arxiv
+        - scratch/datasets/downloaded/math_stack
+      budget: 8192
+
+    - name: prose
+      trainer_data:
+        - fineweb-edu
+      budget: 8192
+
+  # Datasets used for Stage 1 (core) and Stage 3 (final) training.
+  # Should be broad, representative text.
+  final_training:
+    data:
+      - wikitext-103
+      - openwebtext
+
+  # Deduplication strategy for Stage 2 partition tokens.
+  # strategy: 'coverage'   — keep token only if it appears in >= min_coverage
+  #                          partition trainer outputs (cross-domain tokens)
+  #           'first-wins' — assign each token to whichever partition first produced it
+  # min_coverage is only used with strategy: coverage.
+  deduplication:
+    strategy: coverage
+    min_coverage: 1    # 1 = keep all tokens; 2 = keep only cross-domain tokens

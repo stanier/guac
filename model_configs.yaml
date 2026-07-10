@@ -1,0 +1,557 @@
+defaults:
+  intermediate_layers_fac: 4
+  max_position_embeddings: 65536
+  max_sequence_length: 1024  # Default sequence length for tokenization and training
+  step_val: 1
+  learning_rate: 8e-4
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  pdbs_train: 16
+  pdbs_eval: 16
+  grad_accum_steps: 6
+  num_train_epochs: 1
+  num_experts: 1
+  num_experts_per_token: 1
+  num_hidden_layers: 1
+  use_rms_norm: true
+  use_flash_attention: true
+  tokenizer_type: sentencepiece
+  tokenizer_model_path: scratch/tokenizers/sentencepiece/shared_60k/tokenizer.model
+  vocab_size: 60000
+
+common_training_kwargs:
+  num_train_epochs: 5
+  fp16: true
+  max_grad_norm: 1.0
+  lr_scheduler_type: constant_with_warmup
+  load_best_model_at_end: true
+  dataloader_drop_last: true
+
+model_training_configs:
+  yocto:
+    step_val: 1
+    hidden_size: 512
+    num_hidden_layers: 4
+    num_attention_heads: 4
+    num_kv_heads: 1
+    learning_rate: 1e-3
+    warmup_ratio: 0.1
+    weight_decay: 0.1
+    pdbs_train: 32
+    pdbs_eval: 32
+    grad_accum_steps: 1
+    num_train_epochs: 3
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+    ]
+    max_sequence_length: 512  # Shorter sequences for smallest model
+
+  # 1080Ti optimized configurations
+  yocto_1080ti:
+    step_val: 10
+    hidden_size: 512
+    num_hidden_layers: 4
+    num_attention_heads: 4
+    num_kv_heads: 1
+    learning_rate: 1e-4
+    warmup_ratio: 0.1
+    weight_decay: 0.1
+    pdbs_train: 8
+    pdbs_eval: 8
+    grad_accum_steps: 16  # Higher grad accum for smaller batches
+    num_train_epochs: 3
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+    ]
+    max_sequence_length: 256  # Shorter for better memory usage
+  zepto:
+    step_val: 1
+    hidden_size: 1024
+    num_hidden_layers: 8
+    num_attention_heads: 8
+    num_kv_heads: 2
+    learning_rate: 8e-4
+    warmup_ratio: 0.1
+    weight_decay: 0.1
+    pdbs_train: 4096
+    pdbs_eval: 4096
+    grad_accum_steps: 4
+    num_train_epochs: 2
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+  atto:
+    step_val: 1
+    hidden_size: 1536
+    num_hidden_layers: 12
+    num_attention_heads: 12
+    num_kv_heads: 3
+    learning_rate: 6e-4
+    warmup_ratio: 0.15
+    weight_decay: 0.05
+    pdbs_train: 2
+    pdbs_eval: 2
+    grad_accum_steps: 1
+    num_train_epochs: 2
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+  femto:
+    step_val: 1
+    hidden_size: 2048
+    num_hidden_layers: 16
+    num_attention_heads: 16
+    num_kv_heads: 4
+    learning_rate: 5e-4
+    warmup_ratio: 0.2
+    weight_decay: 0.05
+    pdbs_train: 1
+    pdbs_eval: 1
+    grad_accum_steps: 1
+    num_train_epochs: 2
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+  pico:
+    step_val: 1
+    hidden_size: 2560
+    num_hidden_layers: 20
+    num_attention_heads: 20
+    num_kv_heads: 5
+    learning_rate: 4e-4
+    warmup_ratio: 0.25
+    weight_decay: 0.03
+    pdbs_train: 512
+    pdbs_eval: 512
+    grad_accum_steps: 10
+    num_train_epochs: 2
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+    moh_top_k: 3
+    moh_temperature: 1.0
+    moh_noise_std: 0.1
+  nano:
+    step_val: 6
+    hidden_size: 3072
+    num_hidden_layers: 24
+    num_attention_heads: 24
+    num_kv_heads: 6
+    learning_rate: 3e-4
+    max_sequence_length: 2048  # Longer sequences for larger model
+    warmup_ratio: 0.3
+    weight_decay: 0.03
+    pdbs_train: 256
+    pdbs_eval: 256
+    grad_accum_steps: 12
+    num_train_epochs: 1
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+    num_experts: 48
+    num_experts_per_token: 2
+    num_shared_experts: 1
+    moe_top_k: 2
+    moe_temperature: 1.0
+    moe_noise_std: 0.1
+    moe_load_balancing_weight: 0.01
+    moh_top_k: 3
+    moh_temperature: 1.0
+    moh_noise_std: 0.1
+  micro:
+    step_val: 5
+    hidden_size: 3584
+    num_hidden_layers: 28
+    num_attention_heads: 28
+    num_kv_heads: 7
+    learning_rate: 2e-4
+    warmup_ratio: 0.35
+    weight_decay: 0.02
+    pdbs_train: 128
+    pdbs_eval: 128
+    grad_accum_steps: 16
+    num_train_epochs: 1
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+    num_experts: 56
+    num_experts_per_token: 2
+    num_shared_experts: 2
+    moe_top_k: 2
+    moe_temperature: 1.0
+    moe_noise_std: 0.05
+    moe_load_balancing_weight: 0.01
+    moh_top_k: 3
+    moh_temperature: 1.0
+    moh_noise_std: 0.05
+  milli:
+    step_val: 4
+    hidden_size: 4096
+    num_hidden_layers: 32
+    num_attention_heads: 32
+    num_kv_heads: 8
+    learning_rate: 0.00015
+    warmup_ratio: 0.4
+    weight_decay: 0.02
+    pdbs_train: 64
+    pdbs_eval: 64
+    grad_accum_steps: 20
+    num_train_epochs: 1
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+    num_experts: 64
+    num_experts_per_token: 2
+    num_shared_experts: 2
+    moe_top_k: 2
+    moe_temperature: 1.0
+    moe_noise_std: 0.05
+    moe_load_balancing_weight: 0.01
+    moh_top_k: 4
+    moh_temperature: 1.0
+    moh_noise_std: 0.05
+  base:
+    step_val: 3
+    hidden_size: 4608
+    num_hidden_layers: 36
+    num_attention_heads: 36
+    num_kv_heads: 9
+    learning_rate: 1e-4
+    warmup_ratio: 0.45
+    weight_decay: 0.01
+    pdbs_train: 32
+    pdbs_eval: 32
+    grad_accum_steps: 32
+    num_train_epochs: 1
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+    num_experts: 72
+    num_experts_per_token: 4
+    num_shared_experts: 2
+    moe_top_k: 4
+    moe_temperature: 1.0
+    moe_noise_std: 0.02
+    moe_load_balancing_weight: 0.01
+    moh_top_k: 4
+    moh_temperature: 1.0
+    moh_noise_std: 0.02
+  kilo:
+    step_val: 2
+    hidden_size: 5120
+    num_hidden_layers: 40
+    num_attention_heads: 40
+    num_kv_heads: 10
+    learning_rate: 8e-5
+    warmup_ratio: 0.5
+    weight_decay: 0.01
+    pdbs_train: 16
+    pdbs_eval: 16
+    grad_accum_steps: 48
+    num_train_epochs: 1
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+    num_experts: 80
+    num_experts_per_token: 4
+    num_shared_experts: 4
+    moe_top_k: 4
+    moe_temperature: 1.0
+    moe_noise_std: 0.01
+    moe_load_balancing_weight: 0.01
+    moh_top_k: 6
+    moh_temperature: 1.0
+    moh_noise_std: 0.01
+  mega:
+    step_val: 1
+    hidden_size: 5632
+    num_hidden_layers: 44
+    num_attention_heads: 44
+    num_kv_heads: 11
+    learning_rate: 6e-5
+    warmup_ratio: 0.5
+    weight_decay: 0.01
+    pdbs_train: 8
+    pdbs_eval: 8
+    grad_accum_steps: 64
+    num_train_epochs: 1
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+    num_experts: 88
+    num_experts_per_token: 8
+    num_shared_experts: 8
+    moe_top_k: 8
+    moe_temperature: 1.0
+    moe_noise_std: 0.01
+    moe_load_balancing_weight: 0.01
+    moh_top_k: 8
+    moh_temperature: 1.0
+    moh_noise_std: 0.01
+  giga:
+    step_val: 1
+    hidden_size: 6144
+    num_hidden_layers: 48
+    num_attention_heads: 48
+    num_kv_heads: 12
+    learning_rate: 4e-5
+    warmup_ratio: 0.5
+    weight_decay: 0.01
+    pdbs_train: 4
+    pdbs_eval: 4
+    grad_accum_steps: 128
+    num_train_epochs: 1
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+    num_experts: 96
+    num_experts_per_token: 8
+    num_shared_experts: 16
+    moe_top_k: 8
+    moe_temperature: 1.0
+    moe_noise_std: 0.005
+    moe_load_balancing_weight: 0.01
+    moh_top_k: 12
+    moh_temperature: 1.0
+    moh_noise_std: 0.005
+  tera:
+    step_val: 1
+    hidden_size: 6656
+    num_hidden_layers: 52
+    num_attention_heads: 52
+    num_kv_heads: 13
+    learning_rate: 3e-5
+    warmup_ratio: 0.5
+    weight_decay: 0.01
+    pdbs_train: 2
+    pdbs_eval: 2
+    grad_accum_steps: 256
+    num_train_epochs: 1
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+    num_experts: 104
+    num_experts_per_token: 16
+    num_shared_experts: 32
+    moe_top_k: 16
+    moe_temperature: 1.0
+    moe_noise_std: 0.002
+    moe_load_balancing_weight: 0.01
+    moh_top_k: 15
+    moh_temperature: 1.0
+    moh_noise_std: 0.002
+  peta:
+    step_val: 1
+    hidden_size: 7168
+    num_hidden_layers: 56
+    num_attention_heads: 56
+    num_kv_heads: 14
+    learning_rate: 2e-5
+    warmup_ratio: 0.5
+    weight_decay: 0.01
+    pdbs_train: 1
+    pdbs_eval: 1
+    grad_accum_steps: 512
+    num_train_epochs: 1
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+    num_experts: 112
+    num_experts_per_token: 16
+    num_shared_experts: 64
+    moe_top_k: 16
+    moe_temperature: 1.0
+    moe_noise_std: 0.001
+    moe_load_balancing_weight: 0.01
+    moh_top_k: 20
+    moh_temperature: 1.0
+    moh_noise_std: 0.001
+  exa:
+    step_val: 1
+    hidden_size: 7680
+    num_hidden_layers: 60
+    num_attention_heads: 60
+    num_kv_heads: 15
+    learning_rate: 1.5e-05
+    warmup_ratio: 0.5
+    weight_decay: 0.01
+    pdbs_train: 1
+    pdbs_eval: 1
+    grad_accum_steps: 1024
+    num_train_epochs: 1
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+    ]
+    num_experts: 120
+    num_experts_per_token: 32
+    num_shared_experts: 128
+    moe_top_k: 32
+    moe_temperature: 1.0
+    moe_noise_std: 0.001
+    moe_load_balancing_weight: 0.01
+    moh_top_k: 28
+    moh_temperature: 1.0
+    moh_noise_std: 0.001
+  zetta:
+    step_val: 1
+    hidden_size: 8192
+    num_hidden_layers: 64
+    num_attention_heads: 64
+    num_kv_heads: 16
+    learning_rate: 1e-5
+    warmup_ratio: 0.5
+    weight_decay: 0.01
+    pdbs_train: 1
+    pdbs_eval: 1
+    grad_accum_steps: 2048
+    num_train_epochs: 1
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      conv, conv, mamba2, conv,
+      
+    ]
+    num_experts: 128
+    num_experts_per_token: 64
+    num_shared_experts: 256
+    moe_top_k: 64
+    moe_temperature: 1.0
+    moe_noise_std: 0.0005
+    moe_load_balancing_weight: 0.01
+    moh_top_k: 40
+    moh_temperature: 1.0
+    moh_noise_std: 0.0005
