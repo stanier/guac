@@ -6,101 +6,101 @@ GUAC is a research framework for training and experimenting with heterogeneous t
 
 ### Prerequisites
 - Python 3.8+
-- PyTorch 2.0+
-- transformers 4.40+
-- CUDA-capable GPU (recommended)
+- PyTorch (CUDA-capable GPU recommended)
+- HuggingFace `transformers`
 
 ### Installation
 ```bash
 git clone <repository>
 cd guac
-pip install -r requirements.txt
-
-# Copy and configure site settings
-cp site_config.example.yml site_config.yml
-# Edit site_config.yml with your paths and preferences
+make install
+# (copies site_config.example.yml -> site_config.yml if it doesn't exist yet)
 ```
+
+> Note: `make install` runs `pip install -r requirements.txt`, but this repo does not currently ship a `requirements.txt`. Create one (or install `torch`/`transformers`/`pyyaml`/`sentencepiece`/`jinja2` manually) before running `make install`.
+
+Then edit `site_config.yml` with your paths and dataset preferences — this file is git-ignored so each environment can have its own local configuration.
 
 ### Basic Training
 ```bash
-# Recommended: Start with stable configuration
-make stable
+# Recommended: three-stage pipeline (pre-training -> mid-training -> post-training)
+make pipeline                 # Full pipeline, default nano config
+make pipeline CONFIG=atto     # With a specific model size
+make pipeline TASK=arithmetic # With a mid-training task specialization
+make pipeline DEBUG=true      # Smaller datasets for a fast debug run
 
-# Or use scripts directly:
-# Quick debug with minimal model
-python scripts/training/pretrain/guac_general.py --model-config iota0
+# Individual stages
+make pretrain
+make midtrain
+make posttrain
 
-# Stable training with mixed architecture
-python scripts/training/pretrain/guac_general.py --model-config iota
-
-# Train arithmetic models
-python scripts/training/pretrain/guac_arithmetic.py --config nano
+# Legacy shortcuts (still wired to the pipeline scripts)
+make debug   # nano config, debug mode
+make stable  # atto config
 ```
 
 ## 🏗️ Architecture Overview
 
-GUAC introduces **Mixed Layer Architectures** - models that use different computational patterns within the same network:
-
-```
-Layer 1: MLP-only        (simplest computation)
-Layer 2: Convolutional   (local pattern processing)
-Layer 3: Convolutional   (more local processing)
-Layer 4: Mamba-2         (state space modeling)
-Layer 5: BASED           (efficient attention)
-Layer 6: Mamba-2         (more state space)
-Layer 7: Flash Attention (full attention)
-Layer 8: MLP-only        (final processing)
-```
+GUAC introduces **Mixed Layer Architectures** - models that use different computational patterns within the same network. For example, the smaller presets in `model_configs.yaml` repeat a `conv, conv, mamba2, conv` block, while larger presets add mixture-of-experts and mixture-of-heads layers on top.
 
 ### Supported Layer Types
-- **Standard Attention**: Multi-head and grouped query attention
-- **Flash Attention**: Memory-efficient attention computation
-- **Convolutional**: 1D convolution for sequence modeling
-- **Mamba-2**: Selective state space models
-- **BASED**: Bidirectional attention with feature maps
-- **MLP-only**: Feed-forward only layers
+Defined in `scripts/training/core/custom_architectures.py`:
+- **`full_attention`**: Standard multi-head attention
+- **`flash_attention`**: Memory-efficient, tiling-based attention
+- **`conv`**: 1D convolution for local pattern recognition
+- **`mamba2`**: Selective state space modeling
+- **`based`**: Linear attention via feature maps
+- **`mlp_only`**: Feed-forward only (no sequence mixing)
+- **`moh_attention`**: Mixture-of-Heads attention
+- **`shared_expert_moe`**: Mixture-of-Experts with shared experts
 
 ## 📁 Project Structure
 
 ```
 guac/
 ├── README.md                     # This file
+├── CLAUDE.md                     # Guidance for Claude Code
+├── Makefile                      # Pipeline commands
+├── model_configs.yaml            # Model size presets (yocto -> zetta)
+├── architecture_configs.yaml     # Architecture definitions (mixed_layer, llama, qwen2, granite, ...)
+├── site_config.example.yml       # Template for local site_config.yml (git-ignored)
 ├── docs/                         # Documentation
-│   ├── ARCHITECTURE.md          # Architecture details
-│   ├── TRAINING.md              # Training guide
-│   ├── CONTRIBUTING.md          # Contributor guide
-│   └── API.md                   # API reference
+│   ├── ARCHITECTURE.md
+│   ├── TRAINING.md
+│   ├── CONTRIBUTING.md
+│   ├── API.md
+│   ├── PATH_ORGANIZATION.md
+│   └── DATASET_DOWNLOAD.md
+├── jobscripts/                   # Slurm job scripts (current + legacy)
 ├── scripts/
-│   ├── training/                # Training scripts
-│   │   ├── pretrain/           # Pretraining workflows
-│   │   ├── custom_architectures.py # Mixed architecture implementations
-│   │   ├── callbacks.py        # Training callbacks
-│   │   └── prompt_templates.py # Prompt system
-│   └── datasets/               # Dataset generation and processing
-├── templates/                   # Jinja2 prompt templates
-├── guac/                       # Core library code
-├── model_configs.yaml          # Model size configurations
-├── architecture_configs.yaml   # Architecture definitions
-└── site_config.yml            # Environment configuration
+│   ├── training/
+│   │   ├── pipeline/            # pretrain.py, midtrain.py, posttrain.py, tokenize_datasets.py
+│   │   ├── tokenizer/           # Tokenizer training pipeline
+│   │   ├── core/                # custom_architectures.py, callbacks.py, dataset_utils.py,
+│   │   │                        # path_manager.py, prompt_templates.py, matryoshka_layers.py
+│   │   ├── finetune/
+│   │   └── slurm/
+│   ├── datasets/                # Dataset generation (gen_arithm.py, ingest_dialogue*.py)
+│   ├── legacy/                  # Superseded scripts, kept for reference
+│   └── contrib/
+├── templates/                    # Jinja2 prompt templates
+├── tests/                        # Unit tests (see `make test`)
+└── scratch/                      # Generated artifacts: checkpoints, tokenizers, tokenized datasets (git-ignored)
 ```
 
 ## 🎯 Key Features
 
 ### 1. **Mixed Layer Architectures**
-- Combine different computational patterns in a single model
-- Layer types progress from simple to complex computations
+- Combine different computational patterns in a single model via `MixedLayerConfig`
 - Enables studying different inductive biases within one model
 
 ### 2. **Novel Prompt System**
-- Custom token design with FLAG and SERIAL tokens
-- Multi-sequence boundary handling
-- Inference trigger and cessation markers
-- Jinja2-based templating system
+- Jinja2-based templating (`scripts/training/core/prompt_templates.py`)
+- Custom tokens for multi-sequence boundaries and inference control
 
 ### 3. **Flexible Configuration**
-- Runtime architecture selection
-- Scalable model size progression (iota → nano → micro → ... → chungus)
-- Environment-agnostic site configuration
+- Scalable model size progression: `yocto` (512 hidden, 4 layers) up through `zetta` (8192 hidden, 64 layers) — see the full table below
+- Environment-agnostic `site_config.yml`, resolved via `PathManager`
 
 ### 4. **Advanced Training Features**
 - Gradient checkpointing for memory efficiency
@@ -127,38 +127,59 @@ GUAC enables research into:
 
 ## 📊 Model Configurations
 
-GUAC provides pre-configured model sizes:
+GUAC provides pre-configured model sizes in `model_configs.yaml` (all use the `mixed_layer` architecture unless noted):
 
-| Config    | Hidden Size | Layers | Attention Heads | Parameters |
-|-----------|-------------|--------|-----------------|------------|
-| `iota`    | 256         | 16     | 4               | ~2M        |
-| `nano`    | 384         | 18     | 8               | ~8M        |
-| `micro`   | 768         | 22     | 6               | ~25M       |
-| `milli`   | 896         | 21     | 16              | ~40M       |
-| `mixed`   | 512         | 8      | 8               | ~48M       |
-| `base`    | 2560        | 36     | 20              | ~1.3B      |
-| `chungus` | 8192        | 80     | 64              | ~65B       |
+| Config    | Hidden Size | Layers | Attention Heads |
+|-----------|-------------|--------|------------------|
+| `yocto`   | 512         | 4      | 4                |
+| `zepto`   | 1024        | 8      | 8                |
+| `atto`    | 1536        | 12     | 12               |
+| `femto`   | 2048        | 16     | 16               |
+| `pico`    | 2560        | 20     | 20               |
+| `nano`    | 3072        | 24     | 24               |
+| `micro`   | 3584        | 28     | 28               |
+| `milli`   | 4096        | 32     | 32               |
+| `base`    | 4608        | 36     | 36               |
+| `kilo`    | 5120        | 40     | 40               |
+| `mega`    | 5632        | 44     | 44               |
+| `giga`    | 6144        | 48     | 48               |
+| `tera`    | 6656        | 52     | 52               |
+| `peta`    | 7168        | 56     | 56               |
+| `exa`     | 7680        | 60     | 60               |
+| `zetta`   | 8192        | 64     | 64               |
+
+There's also a `yocto_1080ti` variant of `yocto` tuned for smaller GPUs. `nano` is the default development config referenced throughout `CLAUDE.md` and the `Makefile`.
 
 ## 🔄 Workflows
 
 ### Training a Mixed Architecture Model
 ```bash
-# Train with cached datasets (default)
-python scripts/training/pretrain/guac_general.py --model-config mixed
+# Full pipeline with cached/tokenized datasets (default)
+make pipeline CONFIG=nano
 
 # Force re-tokenization
-python scripts/training/pretrain/guac_general.py --force-retokenize
+make pipeline FORCE_RETOKENIZE=true
 
-# Use specific datasets
-python scripts/training/pretrain/guac_general.py --datasets wikitext-103,fineweb-edu
+# Different mid-training task specialization
+make pipeline TASK=code
+make pipeline TASK=reasoning
 
-# Disable template processing
-python scripts/training/pretrain/guac_general.py --no-templates
+# Debug mode with smaller datasets
+make pipeline DEBUG=true
 ```
 
-### Generating Arithmetic Datasets
+### Tokenizer & Dataset Preparation
 ```bash
-python scripts/datasets/gen_arithm.py --num-samples 10000 --complexity simple
+make train-tokenizer VOCAB_SIZE=60000 DATASETS=fineweb
+make tokenize-datasets TOKENIZER_PATH=scratch/tokenizers/sentencepiece/shared_60k
+```
+
+### Utilities
+```bash
+make status   # Pipeline status and available models
+make configs  # Show available model configs
+make cache    # Show cached dataset info
+make clean    # Clean all outputs
 ```
 
 ## 🤝 Contributing
@@ -171,16 +192,12 @@ We welcome contributions! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for
 
 ## 📄 License
 
-[Specify your license here]
+MIT License — Copyright (c) 2026 Keyton Stanier. See [LICENSE](LICENSE) for the full text.
 
 ## 🙏 Acknowledgments
 
 GUAC builds upon work from:
 - **Mamba-2**: Selective state space models
-- **BASED**: Bidirectional attention mechanisms
+- **BASED**: Linear attention via feature maps
 - **Flash Attention**: Memory-efficient attention
 - **Transformers**: HuggingFace ecosystem
-
-## 📞 Contact
-
-[Add contact information for the research team]
