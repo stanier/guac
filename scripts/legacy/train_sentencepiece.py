@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-SentencePiece tokenizer training script for GUAC architecture.
+SentencePiece tokenizer training script for Guac architecture.
 
-This script trains a SentencePiece tokenizer optimized for the GUAC mixed layer
+This script trains a SentencePiece tokenizer optimized for the Guac mixed layer
 architecture, with support for arithmetic operations and mathematical content.
 """
 
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class SentencePieceTrainer:
     """
-    Trains SentencePiece tokenizers optimized for GUAC arithmetic models.
+    Trains SentencePiece tokenizers optimized for Guac arithmetic models.
     """
 
     def __init__(self, output_dir: Optional[str] = None):
@@ -313,7 +313,7 @@ class SentencePieceTrainer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train SentencePiece tokenizer for GUAC")
+    parser = argparse.ArgumentParser(description="Train SentencePiece tokenizer for Guac")
     parser.add_argument('--input_files', nargs='+', help='Input training data files')
     parser.add_argument('--output_dir', default=None, help='Output directory (default: uses path manager)')
     parser.add_argument('--model_prefix', default='guac_sp', help='Model prefix')

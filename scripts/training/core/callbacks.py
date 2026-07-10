@@ -1,5 +1,5 @@
 """
-Training callbacks for GUAC arithmetic models.
+Training callbacks for Guac arithmetic models.
 """
 
 import time

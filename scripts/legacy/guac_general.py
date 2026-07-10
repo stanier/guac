@@ -9,7 +9,7 @@ character-level tokenizers with special token integration.
 
 Usage:
     # Basic training with automatic SentencePiece tokenizer
-    python guac_general.py --model-config nano
+    python guac_general.py --model-config guac-3b
 
     # Train with specific datasets and custom vocab size
     python guac_general.py --datasets wikitext-103,openwebtext --vocab-size 16000

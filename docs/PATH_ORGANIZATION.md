@@ -1,6 +1,6 @@
-# GUAC Path Organization
+# Guac Path Organization
 
-This document describes the new centralized path management system for GUAC training, which ensures all outputs are organized under the configured `SCRATCH_DIR`.
+This document describes the new centralized path management system for Guac training, which ensures all outputs are organized under the configured `SCRATCH_DIR`.
 
 ## Overview
 
@@ -92,7 +92,7 @@ dataset_dir = pm.get_dataset_base_dir()
 
 # Get specific paths
 tokenizer_path = pm.get_tokenizer_output_path("sentencepiece", "my_tokenizer")
-model_path = pm.get_model_output_path("pretraining", "nano")
+model_path = pm.get_model_output_path("pretraining", "guac-3b")
 cache_path = pm.get_tokenized_dataset_path("pretraining", "wikitext_vocab32k")
 ```
 
@@ -110,7 +110,7 @@ from scripts.training.core.path_manager import (
 )
 
 # Use directly
-model_dir = get_model_output_path("pretraining", "nano")
+model_dir = get_model_output_path("pretraining", "guac-3b")
 hf_cache = get_huggingface_cache_dir()
 ```
 

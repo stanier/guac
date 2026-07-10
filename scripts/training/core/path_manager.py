@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Centralized Path Management for GUAC Training System
+Centralized Path Management for Guac Training System
 
 This module provides a unified interface for managing all filesystem paths
-used in the GUAC training pipeline, ensuring everything is organized under
+used in the Guac training pipeline, ensuring everything is organized under
 the configured SCRATCH_DIR from site_config.yml.
 
 All output paths (datasets, tokenizers, models, caches) are derived from
@@ -18,7 +18,7 @@ import warnings
 
 
 class PathManager:
-    """Centralized path manager for all GUAC training outputs."""
+    """Centralized path manager for all Guac training outputs."""
 
     def __init__(self, config_path: Optional[str] = None):
         """Initialize path manager with site configuration.
@@ -238,7 +238,7 @@ class PathManager:
 
         Args:
             stage: Training stage ('pretraining', 'midtraining', 'posttraining')
-            config_name: Model configuration name (nano, pico, etc.)
+            config_name: Model configuration name (guac-3b, guac-1.9b, etc.)
             task: Optional task name for mid-training
             mode: Optional mode for post-training
 

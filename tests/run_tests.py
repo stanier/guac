@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test runner for GUAC training system.
+Test runner for Guac training system.
 
 This script runs all available tests and provides a summary of results.
 Can be run from the project root directory.
@@ -25,7 +25,7 @@ os.chdir(project_root)  # Set working directory to project root
 
 
 class TestRunner:
-    """Test runner for GUAC tests."""
+    """Test runner for Guac tests."""
 
     def __init__(self):
         self.tests_dir = project_root / "tests"
@@ -96,7 +96,7 @@ class TestRunner:
 
     def run_all_tests(self):
         """Run all available tests."""
-        print("🚀 Running All GUAC Tests")
+        print("🚀 Running All Guac Tests")
         print("=" * 50)
 
         results = {}
@@ -129,7 +129,7 @@ class TestRunner:
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="GUAC Test Runner",
+        description="Guac Test Runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Usage:")[1] if "Usage:" in __doc__ else ""
     )

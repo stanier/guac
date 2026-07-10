@@ -1,4 +1,4 @@
-# GUAC Training Directory Structure
+# Guac Training Directory Structure
 
 This directory contains all training-related scripts organized into logical subdirectories.
 
@@ -8,7 +8,7 @@ This directory contains all training-related scripts organized into logical subd
 scripts/training/
 ├── core/                    # Core modules (shared across all training stages)
 │   ├── callbacks.py         # Training callbacks (progress, profiling, etc.)
-│   ├── custom_architectures.py  # GUAC model architectures (MixedLayer, MoE, etc.)
+│   ├── custom_architectures.py  # Guac model architectures (MixedLayer, MoE, etc.)
 │   ├── prompt_templates.py  # Prompt template utilities
 │   └── train_tokenizer.py   # Tokenizer training utilities
 ├── pipeline/                # Three-stage training pipeline (main scripts)
@@ -24,13 +24,13 @@ scripts/training/
 │   ├── train_sentencepiece.py      # Legacy SP trainer
 │   └── train_with_sentencepiece.py # Legacy training script
 └── finetune/               # Specialized fine-tuning scripts
-    └── train_guac0.py      # GUAC v0 fine-tuning
+    └── train_guac0.py      # Guac v0 fine-tuning
 ```
 
 ## Core Modules
 
 ### `core/custom_architectures.py`
-- **MixedLayerForCausalLM**: Main GUAC model class
+- **MixedLayerForCausalLM**: Main Guac model class
 - **MixedLayerConfig**: Configuration for mixed architectures
 - Supports: Mamba2, BASED, Conv1D, Attention, MoE, MoH
 - Modern features: RMSNorm, Flash Attention 2, Gradient Checkpointing
@@ -72,7 +72,7 @@ scripts/training/
 make pipeline
 
 # Individual stages
-make pretrain CONFIG=nano
+make pretrain CONFIG=guac-3b
 make midtrain TASK=arithmetic
 make posttrain MODE=instruction
 

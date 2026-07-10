@@ -1,8 +1,8 @@
-# GUAC: General Understanding and Computational Architecture
+# Guac
 
-GUAC is a research framework for training and experimenting with heterogeneous transformer architectures, featuring mixed layer types and novel prompt formatting designed for complex sequence-to-sequence tasks.
+Guac is an experimental research codebase for training and experimenting with heterogeneous transformer architectures, featuring mixed layer types and a custom prompt formatting system designed for complex sequence-to-sequence tasks. It's active research code, not a polished library — expect rough edges.
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Python 3.8+
@@ -11,7 +11,7 @@ GUAC is a research framework for training and experimenting with heterogeneous t
 
 ### Installation
 ```bash
-git clone <repository>
+git clone github.com/stanier/guac
 cd guac
 make install
 # (copies site_config.example.yml -> site_config.yml if it doesn't exist yet)
@@ -24,8 +24,8 @@ Then edit `site_config.yml` with your paths and dataset preferences — this fil
 ### Basic Training
 ```bash
 # Recommended: three-stage pipeline (pre-training -> mid-training -> post-training)
-make pipeline                 # Full pipeline, default nano config
-make pipeline CONFIG=atto     # With a specific model size
+make pipeline                 # Full pipeline, default guac-3b config
+make pipeline CONFIG=guac-590m     # With a specific model size
 make pipeline TASK=arithmetic # With a mid-training task specialization
 make pipeline DEBUG=true      # Smaller datasets for a fast debug run
 
@@ -35,13 +35,13 @@ make midtrain
 make posttrain
 
 # Legacy shortcuts (still wired to the pipeline scripts)
-make debug   # nano config, debug mode
-make stable  # atto config
+make debug   # guac-3b config, debug mode
+make stable  # guac-590m config
 ```
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
-GUAC introduces **Mixed Layer Architectures** - models that use different computational patterns within the same network. For example, the smaller presets in `model_configs.yaml` repeat a `conv, conv, mamba2, conv` block, while larger presets add mixture-of-experts and mixture-of-heads layers on top.
+Guac introduces **Mixed Layer Architectures** - models that use different computational patterns within the same network. For example, the smaller presets in `model_configs.yaml` repeat a `conv, conv, mamba2, conv` block, while larger presets add mixture-of-experts and mixture-of-heads layers on top.
 
 ### Supported Layer Types
 Defined in `scripts/training/core/custom_architectures.py`:
@@ -54,52 +54,18 @@ Defined in `scripts/training/core/custom_architectures.py`:
 - **`moh_attention`**: Mixture-of-Heads attention
 - **`shared_expert_moe`**: Mixture-of-Experts with shared experts
 
-## 📁 Project Structure
-
-```
-guac/
-├── README.md                     # This file
-├── CLAUDE.md                     # Guidance for Claude Code
-├── Makefile                      # Pipeline commands
-├── model_configs.yaml            # Model size presets (yocto -> zetta)
-├── architecture_configs.yaml     # Architecture definitions (mixed_layer, llama, qwen2, granite, ...)
-├── site_config.example.yml       # Template for local site_config.yml (git-ignored)
-├── docs/                         # Documentation
-│   ├── ARCHITECTURE.md
-│   ├── TRAINING.md
-│   ├── CONTRIBUTING.md
-│   ├── API.md
-│   ├── PATH_ORGANIZATION.md
-│   └── DATASET_DOWNLOAD.md
-├── jobscripts/                   # Slurm job scripts (current + legacy)
-├── scripts/
-│   ├── training/
-│   │   ├── pipeline/            # pretrain.py, midtrain.py, posttrain.py, tokenize_datasets.py
-│   │   ├── tokenizer/           # Tokenizer training pipeline
-│   │   ├── core/                # custom_architectures.py, callbacks.py, dataset_utils.py,
-│   │   │                        # path_manager.py, prompt_templates.py, matryoshka_layers.py
-│   │   ├── finetune/
-│   │   └── slurm/
-│   ├── datasets/                # Dataset generation (gen_arithm.py, ingest_dialogue*.py)
-│   ├── legacy/                  # Superseded scripts, kept for reference
-│   └── contrib/
-├── templates/                    # Jinja2 prompt templates
-├── tests/                        # Unit tests (see `make test`)
-└── scratch/                      # Generated artifacts: checkpoints, tokenizers, tokenized datasets (git-ignored)
-```
-
-## 🎯 Key Features
+## Key Features
 
 ### 1. **Mixed Layer Architectures**
 - Combine different computational patterns in a single model via `MixedLayerConfig`
 - Enables studying different inductive biases within one model
 
-### 2. **Novel Prompt System**
+### 2. **Custom Prompt System**
 - Jinja2-based templating (`scripts/training/core/prompt_templates.py`)
 - Custom tokens for multi-sequence boundaries and inference control
 
 ### 3. **Flexible Configuration**
-- Scalable model size progression: `yocto` (512 hidden, 4 layers) up through `zetta` (8192 hidden, 64 layers) — see the full table below
+- Scalable model size progression: `guac-106m` (512 hidden, 4 layers) up through `guac-48b` (8192 hidden, 64 layers) — see the full table below
 - Environment-agnostic `site_config.yml`, resolved via `PathManager`
 
 ### 4. **Advanced Training Features**
@@ -108,16 +74,16 @@ guac/
 - Live inference during training
 - Streaming dataset support
 
-## 📖 Documentation
+## Documentation
 
 - **[Architecture Guide](docs/ARCHITECTURE.md)**: Detailed architecture explanations
 - **[Training Guide](docs/TRAINING.md)**: Training workflows and best practices
 - **[API Reference](docs/API.md)**: Code API documentation
-- **[Contributing](docs/CONTRIBUTING.md)**: How to contribute to GUAC
+- **[Contributing](docs/CONTRIBUTING.md)**: How to contribute to Guac
 
-## 🧪 Research Goals
+## Research Questions
 
-GUAC enables research into:
+Guac is built to explore:
 
 1. **Heterogeneous Architectures**: How do different layer types interact?
 2. **Computational Complexity**: Optimal ordering of computation patterns
@@ -125,37 +91,37 @@ GUAC enables research into:
 4. **Efficient Attention**: Comparing attention mechanisms within one model
 5. **Mathematical Reasoning**: Arithmetic and symbolic computation tasks
 
-## 📊 Model Configurations
+## Model Configurations
 
-GUAC provides pre-configured model sizes in `model_configs.yaml` (all use the `mixed_layer` architecture unless noted):
+Guac provides pre-configured model sizes in `model_configs.yaml` (all use the `mixed_layer` architecture unless noted):
 
-| Config    | Hidden Size | Layers | Attention Heads |
-|-----------|-------------|--------|------------------|
-| `yocto`   | 512         | 4      | 4                |
-| `zepto`   | 1024        | 8      | 8                |
-| `atto`    | 1536        | 12     | 12               |
-| `femto`   | 2048        | 16     | 16               |
-| `pico`    | 2560        | 20     | 20               |
-| `nano`    | 3072        | 24     | 24               |
-| `micro`   | 3584        | 28     | 28               |
-| `milli`   | 4096        | 32     | 32               |
-| `base`    | 4608        | 36     | 36               |
-| `kilo`    | 5120        | 40     | 40               |
-| `mega`    | 5632        | 44     | 44               |
-| `giga`    | 6144        | 48     | 48               |
-| `tera`    | 6656        | 52     | 52               |
-| `peta`    | 7168        | 56     | 56               |
-| `exa`     | 7680        | 60     | 60               |
-| `zetta`   | 8192        | 64     | 64               |
+| Config        | Hidden Size | Layers | Attention Heads  |
+|---------------|-------------|--------|------------------|
+| `guac-106m`   | 512         | 4      | 4                |
+| `guac-280m`   | 1024        | 8      | 8                |
+| `guac-590m`   | 1536        | 12     | 12               |
+| `guac-1.1b`   | 2048        | 16     | 16               |
+| `guac-1.9b`   | 2560        | 20     | 20               |
+| `guac-3b`     | 3072        | 24     | 24               |
+| `guac-4.5b`   | 3584        | 28     | 28               |
+| `guac-6.5b`   | 4096        | 32     | 32               |
+| `guac-9b`     | 4608        | 36     | 36               |
+| `guac-12b`    | 5120        | 40     | 40               |
+| `guac-16b`    | 5632        | 44     | 44               |
+| `guac-21b`    | 6144        | 48     | 48               |
+| `guac-26b`    | 6656        | 52     | 52               |
+| `guac-32b`    | 7168        | 56     | 56               |
+| `guac-39b`    | 7680        | 60     | 60               |
+| `guac-48b`    | 8192        | 64     | 64               |
 
-There's also a `yocto_1080ti` variant of `yocto` tuned for smaller GPUs. `nano` is the default development config referenced throughout `CLAUDE.md` and the `Makefile`.
+There's also a `guac-106m-1080ti` variant of `guac-106m` tuned for smaller GPUs. `guac-3b` is the default development config referenced throughout `CLAUDE.md` and the `Makefile`.
 
-## 🔄 Workflows
+## Workflows
 
 ### Training a Mixed Architecture Model
 ```bash
 # Full pipeline with cached/tokenized datasets (default)
-make pipeline CONFIG=nano
+make pipeline CONFIG=guac-3b
 
 # Force re-tokenization
 make pipeline FORCE_RETOKENIZE=true
@@ -182,22 +148,11 @@ make cache    # Show cached dataset info
 make clean    # Clean all outputs
 ```
 
-## 🤝 Contributing
+## Attributions
 
-We welcome contributions! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines on:
-- Code style and standards
-- Adding new layer types
-- Submitting experiments
-- Documentation improvements
+Guac's mixed-layer architectures build on the following work:
 
-## 📄 License
-
-MIT License — Copyright (c) 2026 Keyton Stanier. See [LICENSE](LICENSE) for the full text.
-
-## 🙏 Acknowledgments
-
-GUAC builds upon work from:
-- **Mamba-2**: Selective state space models
-- **BASED**: Linear attention via feature maps
-- **Flash Attention**: Memory-efficient attention
-- **Transformers**: HuggingFace ecosystem
+- Dao, T. & Gu, A. (2024). *Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality* (Mamba-2). arXiv:2405.21060.
+- Arora, S., Eyuboglu, S., Timalsina, A., Johnson, I., Poli, M., Zou, J., Rudra, A., & Ré, C. (2024). *Simple linear attention language models balance the recall-throughput tradeoff* (BASED). arXiv:2402.18668.
+- Dao, T., Fu, D. Y., Ermon, S., Rudra, A., & Ré, C. (2022). *FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness*. arXiv:2205.14135.
+- Wolf, T. et al. (2020). *Transformers: State-of-the-Art Natural Language Processing* (HuggingFace `transformers`). arXiv:1910.03771.

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-SentencePiece tokenizer wrapper for GUAC mixed layer architecture.
+SentencePiece tokenizer wrapper for Guac mixed layer architecture.
 
 This module provides a unified interface for SentencePiece tokenization
-that integrates seamlessly with the GUAC training pipeline and supports
+that integrates seamlessly with the Guac training pipeline and supports
 arithmetic and mathematical content tokenization.
 """
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class GUACSentencePieceTokenizer(PreTrainedTokenizer):
     """
-    GUAC-specific SentencePiece tokenizer that extends HuggingFace's PreTrainedTokenizer.
+    Guac-specific SentencePiece tokenizer that extends HuggingFace's PreTrainedTokenizer.
 
     This tokenizer is optimized for arithmetic and mathematical content while
     maintaining compatibility with the transformers library ecosystem.
@@ -47,7 +47,7 @@ class GUACSentencePieceTokenizer(PreTrainedTokenizer):
         **kwargs
     ):
         """
-        Initialize the GUAC SentencePiece tokenizer.
+        Initialize the Guac SentencePiece tokenizer.
 
         Args:
             vocab_file: Path to the SentencePiece model file
@@ -442,21 +442,21 @@ class GUACSentencePieceTokenizer(PreTrainedTokenizer):
 
 def load_guac_tokenizer(model_path: str, **kwargs) -> GUACSentencePieceTokenizer:
     """
-    Load a GUAC SentencePiece tokenizer.
+    Load a Guac SentencePiece tokenizer.
 
     Args:
         model_path: Path to the SentencePiece model file
         **kwargs: Additional tokenizer arguments
 
     Returns:
-        Loaded GUAC tokenizer
+        Loaded Guac tokenizer
     """
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Tokenizer model not found: {model_path}")
 
     tokenizer = GUACSentencePieceTokenizer(vocab_file=model_path, **kwargs)
 
-    logger.info(f"Loaded GUAC tokenizer from {model_path}")
+    logger.info(f"Loaded Guac tokenizer from {model_path}")
     logger.info(f"Vocabulary size: {tokenizer.vocab_size}")
     logger.info(f"Special tokens: {list(tokenizer.special_tokens_map.keys())}")
 

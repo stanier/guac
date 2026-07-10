@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Custom architecture implementations for GUAC training.
+Custom architecture implementations for Guac training.
 
 This module provides custom model architectures that can be used alongside
 standard transformers architectures.

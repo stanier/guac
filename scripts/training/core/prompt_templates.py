@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Prompt template system for GUAC sequence-to-sequence training.
+Prompt template system for Guac sequence-to-sequence training.
 
 This module defines special tokens and Jinja templates for structured model inputs
 with proper sequence boundaries, guidance markers, and inference delimiters.
@@ -52,7 +52,7 @@ TEMPLATE_PROPERTIES = {
 }
 
 class PromptTokenizer:
-    """Manages special tokens and template rendering for GUAC prompts."""
+    """Manages special tokens and template rendering for Guac prompts."""
 
     def __init__(self, template_dir=None):
         self.flag_tokens = {}

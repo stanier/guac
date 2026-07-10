@@ -56,16 +56,16 @@ def test_path_manager():
     print("\n🤖 Model Paths:")
     for stage in ['pretraining', 'midtraining', 'posttraining']:
         if stage == 'midtraining':
-            path = pm.get_model_output_path(stage, "nano", task="arithmetic")
+            path = pm.get_model_output_path(stage, "guac-3b", task="arithmetic")
         elif stage == 'posttraining':
-            path = pm.get_model_output_path(stage, "nano", task="arithmetic", mode="instruction")
+            path = pm.get_model_output_path(stage, "guac-3b", task="arithmetic", mode="instruction")
         else:
-            path = pm.get_model_output_path(stage, "nano")
+            path = pm.get_model_output_path(stage, "guac-3b")
         print(f"  {stage.title()}: {path}")
 
     # Test checkpoint paths
     print("\n📋 Checkpoint Paths:")
-    checkpoint_dir = pm.get_checkpoint_dir("pretraining", "nano")
+    checkpoint_dir = pm.get_checkpoint_dir("pretraining", "guac-3b")
     print(f"  Checkpoints: {checkpoint_dir}")
 
     # Test temporary paths
@@ -87,7 +87,7 @@ def test_path_manager():
         hf_cache, generated_dir, custom_dataset,
         pm.get_tokenized_dataset_path("pretraining", "test"),
         pm.get_tokenizer_output_path("sentencepiece"),
-        pm.get_model_output_path("pretraining", "nano"),
+        pm.get_model_output_path("pretraining", "guac-3b"),
         checkpoint_dir, temp_tokenizer, temp_data
     ]
 

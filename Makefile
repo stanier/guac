@@ -1,17 +1,17 @@
-# GUAC Training Makefile
+# Guac Training Makefile
 # Provides convenient commands for common training workflows
 
 .PHONY: help debug train arithmetic clean cache test install pipeline pretrain midtrain posttrain \
 	status clean-models clean-cache progressive multitask benchmark expert examples \
 	pretrain-debug midtrain-debug posttrain-debug pipeline-debug pipeline-profiling \
-	pipeline-code pipeline-reasoning pipeline-nano pipeline-pico pipeline-femto pipeline-atto \
+	pipeline-code pipeline-reasoning pipeline-guac-3b pipeline-guac-1.9b pipeline-guac-1.1b pipeline-guac-590m \
 	configs arch download-datasets download-datasets-from download-pretraining-datasets \
 	download-instruction-datasets download-from-site-config download-help train-tokenizer \
 	tokenize-datasets
 
 # Default target
 help:
-	@echo "GUAC Training Commands:"
+	@echo "Guac Training Commands:"
 	@echo ""
 	@echo "=== Tokenizer & Dataset Preparation ==="
 	@echo "  make train-tokenizer   - Train a new tokenizer on specified datasets"
@@ -25,8 +25,8 @@ help:
 	@echo "  make pipeline-fresh - Force re-tokenization and run full pipeline"
 	@echo ""
 	@echo "=== Legacy Commands ==="
-	@echo "  make debug      - Quick debug training with nano model (fastest)"
-	@echo "  make stable     - Stable training with femto model (recommended)"
+	@echo "  make debug      - Quick debug training with guac-3b model (fastest)"
+	@echo "  make stable     - Stable training with guac-1.1b model (recommended)"
 	@echo "  make train      - Standard training with mixed architecture"
 	@echo "  make arithmetic - Train arithmetic-specific model (now mid-training task)"
 	@echo ""
@@ -43,7 +43,7 @@ help:
 	@echo "  VOCAB_SIZE=60000 - Vocabulary size for tokenizer training"
 	@echo "  TOKENIZER_PATH=  - Path to tokenizer for dataset tokenization"
 	@echo "  MAX_LENGTH=1024  - Maximum sequence length for tokenization"
-	@echo "  CONFIG=nano      - Model config (nano, pico, femto, atto, zepto, etc.)"
+	@echo "  CONFIG=guac-3b      - Model config (guac-3b, guac-1.9b, guac-1.1b, guac-590m, guac-280m, etc.)"
 	@echo "  TASK=arithmetic  - Mid-training task (arithmetic, code, reasoning, custom)"
 	@echo "  MODE=instruction - Post-training mode (instruction, sft)"
 	@echo "  DATASETS=fineweb - Datasets for training"
@@ -51,7 +51,7 @@ help:
 	@echo "  FORCE_RETOKENIZE=false - Force re-tokenization even if cached"
 
 # Configuration variables
-CONFIG ?= nano
+CONFIG ?= guac-3b
 DATASETS ?= fineweb
 TASK ?= arithmetic
 MODE ?= instruction
@@ -204,17 +204,17 @@ pipeline-reasoning:
 	$(MAKE) pipeline TASK=reasoning
 
 # Different model sizes
-pipeline-nano:
-	$(MAKE) pipeline CONFIG=nano
+pipeline-guac-3b:
+	$(MAKE) pipeline CONFIG=guac-3b
 
-pipeline-pico:
-	$(MAKE) pipeline CONFIG=pico
+pipeline-guac-1.9b:
+	$(MAKE) pipeline CONFIG=guac-1.9b
 
-pipeline-femto:
-	$(MAKE) pipeline CONFIG=femto
+pipeline-guac-1.1b:
+	$(MAKE) pipeline CONFIG=guac-1.1b
 
-pipeline-atto:
-	$(MAKE) pipeline CONFIG=atto
+pipeline-guac-590m:
+	$(MAKE) pipeline CONFIG=guac-590m
 
 # ============================================================================
 # LEGACY COMMANDS (Updated to use new scripts)
@@ -222,8 +222,8 @@ pipeline-atto:
 
 # Quick debug training (minimal model, fast iteration)
 debug:
-	@echo "🐛 Quick debug mode - using nano model with small dataset"
-	$(MAKE) pretrain CONFIG=nano DEBUG=true
+	@echo "🐛 Quick debug mode - using guac-3b model with small dataset"
+	$(MAKE) pretrain CONFIG=guac-3b DEBUG=true
 
 # Standard training with mixed architecture (now uses new pipeline)
 train:
@@ -232,8 +232,8 @@ train:
 
 # Stable training with conservative settings (now uses new pipeline)
 stable:
-	@echo "📊 Stable training - using atto model"
-	$(MAKE) pretrain CONFIG=atto DATASETS=$(DATASETS)
+	@echo "📊 Stable training - using guac-590m model"
+	$(MAKE) pretrain CONFIG=guac-590m DATASETS=$(DATASETS)
 
 # Arithmetic-specific training (now mid-training task)
 arithmetic:
@@ -248,7 +248,7 @@ arithmetic:
 
 # Test installation and basic functionality
 test:
-	@echo "🧪 Running GUAC Test Suite..."
+	@echo "🧪 Running Guac Test Suite..."
 	python tests/run_tests.py
 
 # Test path manager specifically
@@ -258,17 +258,17 @@ test-path:
 
 # Legacy installation test
 test-install:
-	@echo "🧪 Testing GUAC installation..."
+	@echo "🧪 Testing Guac installation..."
 	@python -c "import torch; print(f'✅ PyTorch: {torch.__version__}')" || echo "❌ PyTorch not installed"
 	@python -c "import transformers; print(f'✅ Transformers: {transformers.__version__}')" || echo "❌ Transformers not installed"
-	@python -c "from scripts.training.core.custom_architectures import MixedLayerForCausalLM; print('✅ GUAC architectures')" || echo "❌ GUAC imports failed"
+	@python -c "from scripts.training.core.custom_architectures import MixedLayerForCausalLM; print('✅ Guac architectures')" || echo "❌ Guac imports failed"
 	@echo "🏃 Running minimal pipeline test..."
-	$(MAKE) pretrain-debug CONFIG=nano
+	$(MAKE) pretrain-debug CONFIG=guac-3b
 	@echo "✅ Installation test complete!"
 
 # Show pipeline status and available models
 status:
-	@echo "📊 GUAC Training Pipeline Status"
+	@echo "📊 Guac Training Pipeline Status"
 	@echo "================================="
 	@echo "Current configuration: CONFIG=$(CONFIG) TASK=$(TASK) MODE=$(MODE)"
 	@echo ""
@@ -287,7 +287,7 @@ status:
 
 # Clean cached datasets and outputs
 clean:
-	@echo "🧹 Cleaning GUAC training outputs..."
+	@echo "🧹 Cleaning Guac training outputs..."
 	@echo "  Removing cached datasets..."
 	@rm -rf ./tokenized_* ./tokenized_cache_* $(SCRATCH_DIR)/tokenized_datasets 2>/dev/null || true
 	@echo "  Removing model outputs..."
@@ -320,12 +320,12 @@ cache:
 # ADVANCED PIPELINE COMMANDS
 # ============================================================================
 
-# Progressive training: nano → pico → femto
+# Progressive training: guac-3b → guac-1.9b → guac-1.1b
 progressive:
 	@echo "📈 Progressive training pipeline..."
-	$(MAKE) pipeline CONFIG=nano
-	$(MAKE) pipeline CONFIG=pico
-	$(MAKE) pipeline CONFIG=femto
+	$(MAKE) pipeline CONFIG=guac-3b
+	$(MAKE) pipeline CONFIG=guac-1.9b
+	$(MAKE) pipeline CONFIG=guac-1.1b
 	@echo "✅ Progressive training complete!"
 
 # Multi-task training: Train all tasks
@@ -340,15 +340,15 @@ multitask:
 # Benchmark training: Train popular configs
 benchmark:
 	@echo "🏆 Benchmark training..."
-	$(MAKE) pipeline CONFIG=nano TASK=arithmetic
-	$(MAKE) pipeline CONFIG=femto TASK=code
-	$(MAKE) pipeline CONFIG=atto TASK=reasoning
+	$(MAKE) pipeline CONFIG=guac-3b TASK=arithmetic
+	$(MAKE) pipeline CONFIG=guac-1.1b TASK=code
+	$(MAKE) pipeline CONFIG=guac-590m TASK=reasoning
 	@echo "✅ Benchmark training complete!"
 
 # Expert training: Large model with all stages
 expert:
 	@echo "🎓 Expert model training..."
-	$(MAKE) pipeline CONFIG=base TASK=reasoning MODE=instruction
+	$(MAKE) pipeline CONFIG=guac-9b TASK=reasoning MODE=instruction
 	@echo "✅ Expert training complete!"
 
 # ============================================================================
@@ -357,7 +357,7 @@ expert:
 
 # Show example commands
 examples:
-	@echo "🚀 GUAC Training Examples"
+	@echo "🚀 Guac Training Examples"
 	@echo "========================="
 	@echo ""
 	@echo "🔥 Quick Start:"
@@ -377,15 +377,15 @@ examples:
 	@echo "  make tokenize-datasets TOKENIZER_PATH=./my_tokenizer MAX_LENGTH=2048"
 	@echo ""
 	@echo "📊 Standard Training:"
-	@echo "  make pipeline                # Default: nano + arithmetic + instruction"
-	@echo "  make pipeline CONFIG=femto   # Femto model pipeline"
+	@echo "  make pipeline                # Default: guac-3b + arithmetic + instruction"
+	@echo "  make pipeline CONFIG=guac-1.1b   # Femto model pipeline"
 	@echo "  make pipeline TASK=code      # Code specialization"
 	@echo "  make pipeline FORCE_RETOKENIZE=true  # Force re-tokenization"
 	@echo ""
 	@echo "🎯 Advanced Pipelines:"
-	@echo "  make pipeline CONFIG=atto TASK=reasoning MODE=sft"
-	@echo "  make multitask CONFIG=femto  # Train all tasks"
-	@echo "  make progressive             # Train nano→pico→femto"
+	@echo "  make pipeline CONFIG=guac-590m TASK=reasoning MODE=sft"
+	@echo "  make multitask CONFIG=guac-1.1b  # Train all tasks"
+	@echo "  make progressive             # Train guac-3b→guac-1.9b→guac-1.1b"
 	@echo ""
 	@echo "🛠️  Utilities:"
 	@echo "  make test                    # Test installation"
@@ -402,7 +402,7 @@ configs:
 
 # Show architecture information
 arch:
-	@echo "🏗️  GUAC Architecture Information:"
+	@echo "🏗️  Guac Architecture Information:"
 	@echo "=================================="
 	@echo "🧠 Available layer types:"
 	@echo "  - mamba2: Mamba-2 state space model"

@@ -1,12 +1,12 @@
-# GUAC Architecture Guide
+# Guac Architecture Guide
 
-This document provides detailed information about GUAC's mixed layer architectures, layer types, and design principles.
+This document provides detailed information about Guac's mixed layer architectures, layer types, and design principles.
 
 ## 🏗️ Mixed Layer Architecture Concept
 
 ### Core Innovation
 
-GUAC introduces **Mixed Layer Architectures** - transformer models where different layers use entirely different computational patterns. This allows studying how various inductive biases interact within a single model.
+Guac introduces **Mixed Layer Architectures** - transformer models where different layers use entirely different computational patterns. This allows studying how various inductive biases interact within a single model.
 
 ```
 Traditional Transformer:    Mixed Layer Architecture:
@@ -285,7 +285,7 @@ To add a new layer type:
 
 ### Prompt System Innovation
 
-GUAC's prompt system intentionally deviates from convention in several key areas:
+Guac's prompt system intentionally deviates from convention in several key areas:
 
 1. **Multi-Sequence Handling**: Uses explicit boundary tokens (FLAG, SERIAL) instead of turn-based markers to support MultiSeq-to-MultiSeq tasks where linear ordering doesn't imply temporal sequence.
 

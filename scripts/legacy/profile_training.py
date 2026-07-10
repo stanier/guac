@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Training profiler utility for GUAC models.
+Training profiler utility for Guac models.
 
 This script provides several methods to profile training performance:
 1. PyTorch Profiler integration

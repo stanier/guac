@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Shared utilities for GUAC training pipeline stages.
+Shared utilities for Guac training pipeline stages.
 
 This module contains common functions used across pretrain, midtrain, and posttrain stages
 to reduce code duplication and maintain consistency.

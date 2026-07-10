@@ -1,1 +1,1 @@
-# Tests package for GUAC training system
+# Tests package for Guac training system

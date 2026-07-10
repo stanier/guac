@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-GUAC is a research framework for training and experimenting with **heterogeneous transformer architectures** — models where different layers use entirely different computational mechanisms (MLP-only, Conv1D, Mamba-2, BASED, Flash Attention, standard attention) stacked together in a single network. The research goal is understanding how mixed layer types interact and what inductive biases they contribute.
+Guac is a research framework for training and experimenting with **heterogeneous transformer architectures** — models where different layers use entirely different computational mechanisms (MLP-only, Conv1D, Mamba-2, BASED, Flash Attention, standard attention) stacked together in a single network. The research goal is understanding how mixed layer types interact and what inductive biases they contribute.
 
 ## Commands
 
@@ -16,7 +16,7 @@ make install
 **Three-stage training pipeline (primary workflow):**
 ```bash
 make pipeline                         # Full pre→mid→post training
-make pipeline CONFIG=nano             # With specific model size
+make pipeline CONFIG=guac-3b             # With specific model size
 make pipeline TASK=arithmetic         # With task specialization
 make pipeline DEBUG=true              # Smaller datasets for debugging
 make pipeline FORCE_RETOKENIZE=true   # Force re-tokenization
@@ -76,7 +76,7 @@ The core novelty is `MixedLayerConfig` in `scripts/training/core/custom_architec
 
 ### Configuration
 
-**`model_configs.yaml`** — Model size presets. Sizes range from `yocto` (512 hidden, 4 layers) through `nano` (384 hidden, 18 layers, development default) to `chungus` (8192 hidden, 80 layers). Each preset includes hyperparameters (lr, batch size, warmup ratio).
+**`model_configs.yaml`** — Model size presets, named after their approximate parameter count. Sizes range from `guac-106m` (512 hidden, 4 layers) through `guac-3b` (3072 hidden, 24 layers, development default) up to `guac-48b` (8192 hidden, 64 layers). Each preset includes hyperparameters (lr, batch size, warmup ratio).
 
 **`architecture_configs.yaml`** — Architecture definitions (`mixed_layer`, `basic_transformer`, `llama`, `qwen2`, `granite`). Controls layer type progressions, normalization, initialization ranges.
 

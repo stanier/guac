@@ -1,6 +1,6 @@
-# GUAC Training Guide
+# Guac Training Guide
 
-This guide covers training workflows, best practices, and troubleshooting for GUAC models.
+This guide covers training workflows, best practices, and troubleshooting for Guac models.
 
 ## 🚀 Quick Start Training
 
@@ -14,7 +14,7 @@ python scripts/training/pretrain/guac_general.py
 python scripts/training/pretrain/guac_general.py --model-config mixed
 
 # Train arithmetic models
-python scripts/training/pretrain/guac_arithmetic.py --config nano
+python scripts/training/pretrain/guac_arithmetic.py --config guac-3b
 ```
 
 ### Command Line Options
@@ -50,12 +50,12 @@ python scripts/training/pretrain/guac_arithmetic.py --config nano
 |-------------|-----------------------|-------------|--------|------------|----------|
 | `iota0`     | Debugging             | 256         | 1      | ~65K       | <1GB     |
 | `iota`      | Small experiments     | 256         | 16     | ~2M        | ~2GB     |
-| `nano`      | Development           | 384         | 18     | ~8M        | ~4GB     |
-| `micro`     | Small models          | 768         | 22     | ~25M       | ~8GB     |
-| `milli`     | Medium experiments    | 896         | 21     | ~40M       | ~12GB    |
+| `guac-3b`      | Development           | 384         | 18     | ~8M        | ~4GB     |
+| `guac-4.5b`     | Small models          | 768         | 22     | ~25M       | ~8GB     |
+| `guac-6.5b`     | Medium experiments    | 896         | 21     | ~40M       | ~12GB    |
 | `mixed`     | Mixed architecture    | 512         | 8      | ~48M       | ~6GB     |
 | `centi`     | Production small      | 1536        | 28     | ~180M      | ~16GB    |
-| `base`      | Production medium     | 2560        | 36     | ~1.3B      | ~24GB    |
+| `guac-9b`      | Production medium     | 2560        | 36     | ~1.3B      | ~24GB    |
 | `chungus`   | Large scale           | 8192        | 80     | ~65B       | >80GB    |
 
 ### Custom Configuration
@@ -100,7 +100,7 @@ model_training_configs:
 
 ### Dataset Caching
 
-GUAC automatically caches tokenized datasets:
+Guac automatically caches tokenized datasets:
 
 ```bash
 # Cache locations (configurable in site_config.yml)
@@ -383,4 +383,4 @@ python scripts/training/pretrain/guac_general.py \
 - Tag successful experiment checkpoints
 - Document hyperparameter changes
 
-This guide should get you started with GUAC training. For specific issues or advanced use cases, refer to the API documentation or open an issue on the repository.
+This guide should get you started with Guac training. For specific issues or advanced use cases, refer to the API documentation or open an issue on the repository.

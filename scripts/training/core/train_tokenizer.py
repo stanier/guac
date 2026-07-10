@@ -255,7 +255,7 @@ def train_tokenizer_from_datasets(datasets: Dict[str, Any], tokenizer_type: str 
             max_sentence_length=kwargs.get('max_sentence_length', 4096)
         )
 
-        # Create GUAC tokenizer with core tokens properly set
+        # Create Guac tokenizer with core tokens properly set
         tokenizer = GUACSentencePieceTokenizer(
             vocab_file=model_path,
             pad_token=core_tokens['pad_token'],

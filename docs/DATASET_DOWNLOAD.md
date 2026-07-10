@@ -1,6 +1,6 @@
 # Dataset Download System
 
-This document describes the CSV-driven dataset download system for GUAC training, which allows batch downloading of HuggingFace datasets using configurable CSV files.
+This document describes the CSV-driven dataset download system for Guac training, which allows batch downloading of HuggingFace datasets using configurable CSV files.
 
 ## Overview
 
@@ -114,7 +114,7 @@ make download-datasets DOWNLOAD_OUTPUT=/data/training
 
 **`datasets_download.csv`** (default):
 ```csv
-# GUAC training datasets
+# Guac training datasets
 HuggingFaceFW/fineweb,100MB,train,,jsonl
 HuggingFaceFW/fineweb-edu,100MB,train,,jsonl
 wikimedia/wikipedia,100MB,train,20231101.en,jsonl

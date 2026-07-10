@@ -1,10 +1,10 @@
-# Contributing to GUAC
+# Contributing to Guac
 
-Welcome to GUAC! This guide will help you contribute effectively to the General Understanding and Computational Architecture project.
+Welcome to Guac! This guide will help you contribute effectively to the project.
 
 ## 🎯 Project Overview
 
-GUAC is a research framework for mixed layer transformer architectures. Our primary goals are:
+Guac is a research framework for mixed layer transformer architectures. Our primary goals are:
 
 1. **Novel Architecture Research**: Exploring heterogeneous transformer layers
 2. **Computational Efficiency**: Studying different computational patterns within single models
@@ -345,4 +345,4 @@ We encourage:
 - **PyTorch**: Tensor operations and autograd
 - **Jinja2**: Template syntax and features
 
-This guide should help you contribute effectively to GUAC. For specific questions, please open an issue or start a discussion!
+This guide should help you contribute effectively to Guac. For specific questions, please open an issue or start a discussion!

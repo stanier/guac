@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for SentencePiece integration with GUAC architecture.
+Test script for SentencePiece integration with Guac architecture.
 """
 
 import os
@@ -151,7 +151,7 @@ def test_model_config_integration():
 def main():
     """Run all tests."""
 
-    print("GUAC SentencePiece Integration Tests")
+    print("Guac SentencePiece Integration Tests")
     print("=" * 60)
 
     # Test 1: Train tokenizer
@@ -176,7 +176,7 @@ def main():
     print("All tests completed!")
     print("\nNext steps:")
     print("1. Run: python scripts/training/train_sentencepiece.py --generate_arithmetic")
-    print("2. Run: python scripts/training/train_with_sentencepiece.py --model nano")
+    print("2. Run: python scripts/training/train_with_sentencepiece.py --model guac-3b")
     print("3. Monitor training with --use_wandb flag")
 
 

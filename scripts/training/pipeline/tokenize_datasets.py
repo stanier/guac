@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GUAC Dataset Tokenization Script
+Guac Dataset Tokenization Script
 
 Pre-tokenize and cache datasets for training.
 
@@ -93,7 +93,7 @@ def tokenize_dataset(dataset: Any, tokenizer: Any, max_length: int = 1024,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GUAC Dataset Tokenization Script")
+    parser = argparse.ArgumentParser(description="Guac Dataset Tokenization Script")
 
     parser.add_argument('--tokenizer', type=str, required=True,
                        help='Path to trained tokenizer directory')

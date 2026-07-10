@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Example training script for GUAC mixed layer architecture with SentencePiece tokenization.
+Example training script for Guac mixed layer architecture with SentencePiece tokenization.
 
-This script demonstrates how to integrate SentencePiece tokenization with the GUAC
+This script demonstrates how to integrate SentencePiece tokenization with the Guac
 mixed layer models for arithmetic and mathematical content training.
 """
 
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 class GUACSentencePieceTrainer:
     """
-    Trainer class for GUAC models with SentencePiece tokenization.
+    Trainer class for Guac models with SentencePiece tokenization.
     """
 
     def __init__(self, config_path: str, model_name: str):
@@ -87,7 +87,7 @@ class GUACSentencePieceTrainer:
             force_retrain: Whether to force retraining the tokenizer
 
         Returns:
-            Configured GUAC SentencePiece tokenizer
+            Configured Guac SentencePiece tokenizer
         """
         tokenizer_path = self.config.get('tokenizer_model_path', 'tokenizers/guac_sp.model')
         vocab_size = self.config.get('vocab_size', 32000)
@@ -144,7 +144,7 @@ class GUACSentencePieceTrainer:
 
     def setup_model(self) -> MixedLayerForCausalLM:
         """
-        Setup the GUAC mixed layer model.
+        Setup the Guac mixed layer model.
 
         Returns:
             Configured model
@@ -409,9 +409,9 @@ class GUACSentencePieceTrainer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train GUAC model with SentencePiece tokenization")
+    parser = argparse.ArgumentParser(description="Train Guac model with SentencePiece tokenization")
     parser.add_argument('--config', default='model_configs.yaml', help='Path to model configuration file')
-    parser.add_argument('--model', default='nano', help='Model configuration to use')
+    parser.add_argument('--model', default='guac-3b', help='Model configuration to use')
     parser.add_argument('--output_dir', default='outputs', help='Output directory')
     parser.add_argument('--epochs', type=int, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, help='Batch size per device')

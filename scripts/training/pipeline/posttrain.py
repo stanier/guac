@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GUAC Post-training Script - Instruction Tuning & Alignment
+Guac Post-training Script - Instruction Tuning & Alignment
 
 Handles post-training phases like instruction tuning and supervised fine-tuning.
 
@@ -363,7 +363,7 @@ def create_posttraining_arguments(output_dir: str, mode: str) -> TrainingArgumen
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GUAC Post-training Script")
+    parser = argparse.ArgumentParser(description="Guac Post-training Script")
 
     parser.add_argument('--base-model', type=str, required=True,
                        help='Path to base model (pre-trained or mid-trained)')

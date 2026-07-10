@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GUAC Mid-training Script - Specialized Task Training
+Guac Mid-training Script - Specialized Task Training
 
 Handles mid-training on specific tasks like arithmetic, code, reasoning, etc.
 
@@ -300,7 +300,7 @@ def create_midtraining_arguments(output_dir: str, learning_rate: float = 1e-5) -
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GUAC Mid-training Script")
+    parser = argparse.ArgumentParser(description="Guac Mid-training Script")
 
     parser.add_argument('--base-model', type=str, required=True,
                        help='Path to pre-trained base model')

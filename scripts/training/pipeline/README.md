@@ -1,6 +1,6 @@
-# GUAC Training Pipeline
+# Guac Training Pipeline
 
-A comprehensive three-stage training pipeline for GUAC language models.
+A comprehensive three-stage training pipeline for Guac language models.
 
 ## Training Stages
 
@@ -9,13 +9,13 @@ Foundation training on large-scale language data.
 
 ```bash
 # Basic pre-training
-python guac_pretrain.py --model-config nano --dataset wikitext-103
+python guac_pretrain.py --model-config guac-3b --dataset wikitext-103
 
 # Multi-dataset pre-training
-python guac_pretrain.py --model-config femto --datasets wikitext-103,openwebtext
+python guac_pretrain.py --model-config guac-1.1b --datasets wikitext-103,openwebtext
 
 # Continue from checkpoint
-python guac_pretrain.py --model-config atto --resume-from-checkpoint /path/to/checkpoint
+python guac_pretrain.py --model-config guac-590m --resume-from-checkpoint /path/to/checkpoint
 ```
 
 **Purpose**: Teach general language understanding, grammar, world knowledge
@@ -67,21 +67,21 @@ python guac_posttrain.py --base-model ./models/midtrain_code --mode instruction 
 
 | Config | Parameters | Use Case |
 |--------|------------|----------|
-| `nano` | 1M | IoT devices, edge computing |
-| `pico` | 3M | Mobile phones, embedded |
-| `femto` | 14M | Laptops, local inference |
-| `atto` | 35M | Desktop applications |
-| `zepto` | 75M | Single GPU training |
-| `yocto` | 120M | Professional workstations |
-| `micro` | 250M | Multi-GPU setups |
-| `milli` | 500M | Small clusters |
+| `guac-3b` | 1M | IoT devices, edge computing |
+| `guac-1.9b` | 3M | Mobile phones, embedded |
+| `guac-1.1b` | 14M | Laptops, local inference |
+| `guac-590m` | 35M | Desktop applications |
+| `guac-280m` | 75M | Single GPU training |
+| `guac-106m` | 120M | Professional workstations |
+| `guac-4.5b` | 250M | Multi-GPU setups |
+| `guac-6.5b` | 500M | Small clusters |
 | `centi` | 1.5B | GPT-2 scale |
 | `deci` | 3.5B | GPT-3 scale |
-| `base` | 7B | LLaMA-7B scale |
-| `kilo` | 15B | GPT-3.5 scale |
-| `mega` | 35B | GPT-4 scale |
-| `giga` | 80B | GPT-4 Turbo scale |
-| `tera` | 250B | Future models |
+| `guac-9b` | 7B | LLaMA-7B scale |
+| `guac-12b` | 15B | GPT-3.5 scale |
+| `guac-16b` | 35B | GPT-4 scale |
+| `guac-21b` | 80B | GPT-4 Turbo scale |
+| `guac-26b` | 250B | Future models |
 | `chungus` | 1T+ | Theoretical AGI scale |
 
 ## Features
@@ -96,7 +96,7 @@ python guac_posttrain.py --base-model ./models/midtrain_code --mode instruction 
 
 ```bash
 # 1. Pre-train a small model
-python guac_pretrain.py --model-config nano --debug
+python guac_pretrain.py --model-config guac-3b --debug
 
 # 2. Specialize for arithmetic
 python guac_midtrain.py --base-model ./models/pretrain_nano --task arithmetic --debug
@@ -110,7 +110,7 @@ python guac_posttrain.py --base-model ./models/midtrain_arithmetic_pretrain_nano
 ### Custom Training Pipeline
 ```bash
 # Full pipeline with profiling
-python guac_pretrain.py --model-config femto --datasets wikitext-103 --enable-profiling
+python guac_pretrain.py --model-config guac-1.1b --datasets wikitext-103 --enable-profiling
 python guac_midtrain.py --base-model ./models/pretrain_femto --task code --enable-profiling
 python guac_posttrain.py --base-model ./models/midtrain_code_pretrain_femto --mode sft --datasets alpaca --enable-profiling
 ```
@@ -118,7 +118,7 @@ python guac_posttrain.py --base-model ./models/midtrain_code_pretrain_femto --mo
 ### Multi-Stage Training
 ```bash
 # Pre-train -> Math specialization -> Instruction tuning
-python guac_pretrain.py --model-config atto --datasets wikitext-103,openwebtext
+python guac_pretrain.py --model-config guac-590m --datasets wikitext-103,openwebtext
 python guac_midtrain.py --base-model ./models/pretrain_atto --task arithmetic --num-arithmetic-samples 100000
 python guac_posttrain.py --base-model ./models/midtrain_arithmetic_pretrain_atto --mode instruction --datasets alpaca,dolly
 ```

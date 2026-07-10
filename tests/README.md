@@ -1,6 +1,6 @@
-# GUAC Tests
+# Guac Tests
 
-This directory contains all test scripts for the GUAC training system. Tests validate functionality across different components including path management, configuration systems, model architectures, and training pipelines.
+This directory contains all test scripts for the Guac training system. Tests validate functionality across different components including path management, configuration systems, model architectures, and training pipelines.
 
 ## Test Organization
 
@@ -108,7 +108,7 @@ Tests runtime architecture configuration system:
 
 ### Requirements
 
-Tests require the same dependencies as the main GUAC system:
+Tests require the same dependencies as the main Guac system:
 
 - PyTorch
 - Transformers

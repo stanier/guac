@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Cache utilities for GUAC training pipeline.
+Cache utilities for Guac training pipeline.
 
 Provides unified caching functionality for tokenized datasets across all training stages.
 """

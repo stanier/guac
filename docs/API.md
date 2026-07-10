@@ -1,6 +1,6 @@
-# GUAC API Reference
+# Guac API Reference
 
-This document provides detailed API reference for GUAC's core components, training scripts, and configuration systems.
+This document provides detailed API reference for Guac's core components, training scripts, and configuration systems.
 
 ## 🏗️ Core Architecture Classes
 
@@ -264,7 +264,7 @@ def train_model(model, tokenizer, train_dataset, args):
 python scripts/training/pretrain/guac_general.py [OPTIONS]
 
 # Model configuration
---model-config TEXT          # Model size (nano, micro, mixed, etc.)
+--model-config TEXT          # Model size (guac-3b, guac-4.5b, mixed, etc.)
 --architecture TEXT          # Architecture type (mixed_layer, etc.)
 --vocab-size INTEGER         # Tokenizer vocabulary size
 
@@ -561,4 +561,4 @@ def diagnose_training_issues(
     """
 ```
 
-This API reference covers the core components of GUAC. For implementation details, see the source code and architecture documentation.
+This API reference covers the core components of Guac. For implementation details, see the source code and architecture documentation.

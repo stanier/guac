@@ -28,7 +28,7 @@ common_training_kwargs:
   dataloader_drop_last: true
 
 model_training_configs:
-  yocto:
+  guac-106m:
     step_val: 1
     hidden_size: 512
     num_hidden_layers: 4
@@ -48,7 +48,7 @@ model_training_configs:
     max_sequence_length: 512  # Shorter sequences for smallest model
 
   # 1080Ti optimized configurations
-  yocto_1080ti:
+  guac-106m-1080ti:
     step_val: 10
     hidden_size: 512
     num_hidden_layers: 4
@@ -66,7 +66,7 @@ model_training_configs:
       conv, conv, mamba2, conv,
     ]
     max_sequence_length: 256  # Shorter for better memory usage
-  zepto:
+  guac-280m:
     step_val: 1
     hidden_size: 1024
     num_hidden_layers: 8
@@ -84,7 +84,7 @@ model_training_configs:
       conv, conv, mamba2, conv,
       conv, conv, mamba2, conv,
     ]
-  atto:
+  guac-590m:
     step_val: 1
     hidden_size: 1536
     num_hidden_layers: 12
@@ -103,7 +103,7 @@ model_training_configs:
       conv, conv, mamba2, conv,
       conv, conv, mamba2, conv,
     ]
-  femto:
+  guac-1.1b:
     step_val: 1
     hidden_size: 2048
     num_hidden_layers: 16
@@ -123,7 +123,7 @@ model_training_configs:
       conv, conv, mamba2, conv,
       conv, conv, mamba2, conv,
     ]
-  pico:
+  guac-1.9b:
     step_val: 1
     hidden_size: 2560
     num_hidden_layers: 20
@@ -147,7 +147,7 @@ model_training_configs:
     moh_top_k: 3
     moh_temperature: 1.0
     moh_noise_std: 0.1
-  nano:
+  guac-3b:
     step_val: 6
     hidden_size: 3072
     num_hidden_layers: 24
@@ -180,7 +180,7 @@ model_training_configs:
     moh_top_k: 3
     moh_temperature: 1.0
     moh_noise_std: 0.1
-  micro:
+  guac-4.5b:
     step_val: 5
     hidden_size: 3584
     num_hidden_layers: 28
@@ -213,7 +213,7 @@ model_training_configs:
     moh_top_k: 3
     moh_temperature: 1.0
     moh_noise_std: 0.05
-  milli:
+  guac-6.5b:
     step_val: 4
     hidden_size: 4096
     num_hidden_layers: 32
@@ -247,7 +247,7 @@ model_training_configs:
     moh_top_k: 4
     moh_temperature: 1.0
     moh_noise_std: 0.05
-  base:
+  guac-9b:
     step_val: 3
     hidden_size: 4608
     num_hidden_layers: 36
@@ -282,7 +282,7 @@ model_training_configs:
     moh_top_k: 4
     moh_temperature: 1.0
     moh_noise_std: 0.02
-  kilo:
+  guac-12b:
     step_val: 2
     hidden_size: 5120
     num_hidden_layers: 40
@@ -318,7 +318,7 @@ model_training_configs:
     moh_top_k: 6
     moh_temperature: 1.0
     moh_noise_std: 0.01
-  mega:
+  guac-16b:
     step_val: 1
     hidden_size: 5632
     num_hidden_layers: 44
@@ -355,7 +355,7 @@ model_training_configs:
     moh_top_k: 8
     moh_temperature: 1.0
     moh_noise_std: 0.01
-  giga:
+  guac-21b:
     step_val: 1
     hidden_size: 6144
     num_hidden_layers: 48
@@ -393,7 +393,7 @@ model_training_configs:
     moh_top_k: 12
     moh_temperature: 1.0
     moh_noise_std: 0.005
-  tera:
+  guac-26b:
     step_val: 1
     hidden_size: 6656
     num_hidden_layers: 52
@@ -432,7 +432,7 @@ model_training_configs:
     moh_top_k: 15
     moh_temperature: 1.0
     moh_noise_std: 0.002
-  peta:
+  guac-32b:
     step_val: 1
     hidden_size: 7168
     num_hidden_layers: 56
@@ -472,7 +472,7 @@ model_training_configs:
     moh_top_k: 20
     moh_temperature: 1.0
     moh_noise_std: 0.001
-  exa:
+  guac-39b:
     step_val: 1
     hidden_size: 7680
     num_hidden_layers: 60
@@ -513,7 +513,7 @@ model_training_configs:
     moh_top_k: 28
     moh_temperature: 1.0
     moh_noise_std: 0.001
-  zetta:
+  guac-48b:
     step_val: 1
     hidden_size: 8192
     num_hidden_layers: 64

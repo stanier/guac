@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GUAC Tokenizer Training Script
+Guac Tokenizer Training Script
 
 Train a SentencePiece or BPE tokenizer on specified datasets.
 
@@ -205,7 +205,7 @@ def train_bpe_tokenizer(training_file: str, output_path: str,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GUAC Tokenizer Training Script")
+    parser = argparse.ArgumentParser(description="Guac Tokenizer Training Script")
 
     parser.add_argument('--vocab-size', type=int, default=60000,
                        help='Vocabulary size for tokenizer')

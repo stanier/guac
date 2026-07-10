@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-GUAC Pre-training Script
+Guac Pre-training Script
 
 Handles pre-training on large-scale language data.
 
 Usage:
-    python pretrain.py --model-config nano --datasets wikitext-103
-    python pretrain.py --model-config femto --datasets wikitext-103,openwebtext
-    python pretrain.py --model-config atto --resume-from-checkpoint /path/to/checkpoint
+    python pretrain.py --model-config guac-3b --datasets wikitext-103
+    python pretrain.py --model-config guac-1.1b --datasets wikitext-103,openwebtext
+    python pretrain.py --model-config guac-590m --resume-from-checkpoint /path/to/checkpoint
 """
 
 import os, sys, yaml, argparse, torch
@@ -474,7 +474,7 @@ def create_callbacks(config: Dict[str, Any], tokenizer: Any, enable_profiling: b
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GUAC Pre-training Script")
+    parser = argparse.ArgumentParser(description="Guac Pre-training Script")
 
     parser.add_argument('--model-config', type=str, required=True,
                        help='Model configuration name from model_configs.yaml')

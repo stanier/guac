@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Shared dataset utilities for GUAC training pipeline.
+Shared dataset utilities for Guac training pipeline.
 
 This module contains common dataset loading, tokenization, and caching functions
 used across all training stages.

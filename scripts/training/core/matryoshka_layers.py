@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Matryoshka Representation Learning for GUAC.
+Matryoshka Representation Learning for Guac.
 
 Implementation based on "Matryoshka Representation Learning" (Kusupati et al., 2022)
 and "MRL: Multi-Resolution Learning" papers.

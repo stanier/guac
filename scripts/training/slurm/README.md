@@ -1,6 +1,6 @@
-# GUAC Slurm Training Scripts
+# Guac Slurm Training Scripts
 
-This directory contains Slurm jobscripts for running GUAC training pipelines on HPC clusters.
+This directory contains Slurm jobscripts for running Guac training pipelines on HPC clusters.
 
 ## Quick Start
 
@@ -17,7 +17,7 @@ You can customize the pipeline by setting environment variables when submitting:
 
 ```bash
 # Train a smaller model with custom vocab
-sbatch --export=PRETRAIN_CONFIG=femto,VOCAB_SIZE=32000 \
+sbatch --export=PRETRAIN_CONFIG=guac-1.1b,VOCAB_SIZE=32000 \
     scripts/training/slurm/full_pipeline.sbatch
 
 # Use different tasks and modes
@@ -38,7 +38,7 @@ sbatch --export=DEBUG_MODE=true,ENABLE_PROFILING=true \
 - `MAX_LENGTH`: Maximum sequence length (default: 1024)
 
 #### Pre-training Settings
-- `PRETRAIN_CONFIG`: Model configuration - nano, micro, femto, atto (default: nano)
+- `PRETRAIN_CONFIG`: Model configuration - guac-3b, guac-4.5b, guac-1.1b, guac-590m (default: guac-3b)
 - `PRETRAIN_DATASETS`: Training datasets (default: fineweb)
 - `PRETRAIN_STEPS`: Maximum training steps (default: 10000)
 
@@ -162,26 +162,26 @@ scancel <jobid>
 
 ### Quick Test Run (Debug Mode)
 ```bash
-sbatch --export=DEBUG_MODE=true,PRETRAIN_CONFIG=atto,PRETRAIN_STEPS=100 \
+sbatch --export=DEBUG_MODE=true,PRETRAIN_CONFIG=guac-590m,PRETRAIN_STEPS=100 \
     scripts/training/slurm/full_pipeline.sbatch
 ```
 
 ### Code Specialization Pipeline
 ```bash
-sbatch --export=PRETRAIN_CONFIG=micro,MIDTRAIN_TASK=code,POSTTRAIN_MODE=sft \
+sbatch --export=PRETRAIN_CONFIG=guac-4.5b,MIDTRAIN_TASK=code,POSTTRAIN_MODE=sft \
     scripts/training/slurm/full_pipeline.sbatch
 ```
 
 ### Reasoning Specialization with Large Vocab
 ```bash
-sbatch --export=VOCAB_SIZE=100000,PRETRAIN_CONFIG=nano,MIDTRAIN_TASK=reasoning \
+sbatch --export=VOCAB_SIZE=100000,PRETRAIN_CONFIG=guac-3b,MIDTRAIN_TASK=reasoning \
     scripts/training/slurm/full_pipeline.sbatch
 ```
 
 ### Production Training (Longer Runtime)
 ```bash
 sbatch --time=72:00:00 \
-    --export=PRETRAIN_CONFIG=nano,PRETRAIN_STEPS=50000 \
+    --export=PRETRAIN_CONFIG=guac-3b,PRETRAIN_STEPS=50000 \
     scripts/training/slurm/full_pipeline.sbatch
 ```
 
@@ -196,7 +196,7 @@ sbatch --time=72:00:00 \
 - Reduce batch size in training configs
 - Use gradient accumulation
 - Request more memory: `#SBATCH --mem=128G`
-- Use smaller model config (atto < femto < micro < nano)
+- Use smaller model config (guac-590m < guac-1.1b < guac-4.5b < guac-3b)
 
 ### Timeout
 - Increase time limit: `#SBATCH --time=96:00:00`
