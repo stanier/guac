@@ -50,6 +50,7 @@ help:
 	@echo "  DATASETS=fineweb - Datasets for training"
 	@echo "  DEBUG=false      - Enable debug mode with smaller datasets"
 	@echo "  FORCE_RETOKENIZE=false - Force re-tokenization even if cached"
+	@echo "  MIDTRAIN_ARGS=   - Extra midtrain.py flags, e.g. \"--learning-rate 1e-3 --reverse-answers\""
 
 # Configuration variables
 CONFIG ?= guac-3b
@@ -62,6 +63,7 @@ VOCAB_SIZE ?= 60000
 MAX_LENGTH ?= 1024
 TOKENIZER_PATH ?=
 FORCE_RETOKENIZE ?= false
+MIDTRAIN_ARGS ?=
 
 # Dataset download configuration
 DOWNLOAD_CSV ?= datasets_download.csv
@@ -156,7 +158,8 @@ midtrain:
 		--output-dir $(MIDTRAIN_DIR) \
 		$(DEBUG_FLAG) \
 		$(PROFILING_FLAG) \
-		$(RETOKENIZE_FLAG)
+		$(RETOKENIZE_FLAG) \
+		$(MIDTRAIN_ARGS)
 	@echo "✅ Mid-training complete: $(MIDTRAIN_DIR)"
 
 # Stage 3: Post-training (instruction tuning/alignment)
