@@ -303,12 +303,13 @@ def load_base_model(model_path: str) -> tuple:
         raise ValueError(f"Failed to load model from {model_path}: {e}")
 
 
-def create_standard_data_collator(training_args: TrainingArguments) -> Any:
+def create_standard_data_collator(training_args: TrainingArguments, tokenizer: Any) -> Any:
     """
     Create standard data collator for language modeling.
 
     Args:
         training_args: Training arguments (used to check fp16 setting)
+        tokenizer: Tokenizer (required by recent transformers versions)
 
     Returns:
         DataCollatorForLanguageModeling instance
@@ -316,6 +317,7 @@ def create_standard_data_collator(training_args: TrainingArguments) -> Any:
     from transformers import DataCollatorForLanguageModeling
 
     return DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
         mlm=False,
         pad_to_multiple_of=8 if training_args.fp16 else None
     )

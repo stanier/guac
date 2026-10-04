@@ -207,6 +207,7 @@ class BasicTransformerForCausalLM(PreTrainedModel, GenerationMixin):
     suitable for text generation tasks.
     """
     config_class = BasicTransformerConfig
+    _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
         super().__init__(config)
@@ -468,7 +469,8 @@ class ConvolutionalLayer(nn.Module):
             in_channels=config.hidden_size,
             out_channels=config.hidden_size,
             kernel_size=config.conv_kernel_size,
-            padding=config.conv_kernel_size // 2,
+            # Causal: pad k-1 on both sides, then keep only the first seq_len outputs
+            padding=config.conv_kernel_size - 1,
             groups=config.conv_groups
         )
 
@@ -491,7 +493,7 @@ class ConvolutionalLayer(nn.Module):
         # Convolutional processing
         # Conv1d expects (batch, channels, sequence) format
         conv_input = normed_states.transpose(1, 2)  # (batch, hidden_size, seq_len)
-        conv_output = self.conv1d(conv_input)
+        conv_output = self.conv1d(conv_input)[:, :, :hidden_states.shape[1]]
         conv_output = conv_output.transpose(1, 2)  # back to (batch, seq_len, hidden_size)
 
         # Apply residual connection
@@ -1475,6 +1477,7 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
     and other layer types.
     """
     config_class = MixedLayerConfig
+    _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
         super().__init__(config)

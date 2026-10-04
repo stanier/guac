@@ -413,7 +413,7 @@ def main():
     if args.enable_profiling:
         callbacks.append(ProfilingCallback(log_every_n_steps=25))
 
-    data_collator = create_standard_data_collator(training_args)
+    data_collator = create_standard_data_collator(training_args, tokenizer)
 
     trainer = Trainer(
         model=model,

@@ -66,6 +66,30 @@ model_training_configs:
       conv, conv, mamba2, conv,
     ]
     max_sequence_length: 256  # Shorter for better memory usage
+
+  # Laptop/CPU arithmetic smoke test: guac-106m with a character-level tokenizer
+  # (build it first: python -m scripts.training.tokenizer.build_char_tokenizer)
+  guac-106m-arith:
+    step_val: 1
+    hidden_size: 512
+    num_hidden_layers: 4
+    num_attention_heads: 4
+    num_kv_heads: 1
+    learning_rate: 1e-3
+    warmup_ratio: 0.1
+    weight_decay: 0.1
+    pdbs_train: 32
+    pdbs_eval: 32
+    grad_accum_steps: 1
+    num_train_epochs: 3
+    architecture: mixed_layer
+    layer_types: [
+      conv, conv, mamba2, conv,
+    ]
+    max_sequence_length: 512
+    tokenizer_type: character
+    tokenizer_model_path: scratch/tokenizers/character/ascii
+    vocab_size: 100
   guac-280m:
     step_val: 1
     hidden_size: 1024
