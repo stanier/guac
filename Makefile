@@ -1,7 +1,7 @@
 # Guac Training Makefile
 # Provides convenient commands for common training workflows
 
-.PHONY: help debug train arithmetic clean cache test install pipeline pretrain midtrain posttrain \
+.PHONY: help debug train arithmetic eval-arithmetic clean cache test install pipeline pretrain midtrain posttrain \
 	status clean-models clean-cache progressive multitask benchmark expert examples \
 	pretrain-debug midtrain-debug posttrain-debug pipeline-debug pipeline-profiling \
 	pipeline-code pipeline-reasoning pipeline-guac-3b pipeline-guac-1.9b pipeline-guac-1.1b pipeline-guac-590m \
@@ -29,6 +29,7 @@ help:
 	@echo "  make stable     - Stable training with guac-1.1b model (recommended)"
 	@echo "  make train      - Standard training with mixed architecture"
 	@echo "  make arithmetic - Train arithmetic-specific model (now mid-training task)"
+	@echo "  make eval-arithmetic - Exact-match arithmetic accuracy (MODEL=dir, default: mid-trained model)"
 	@echo ""
 	@echo "=== Utilities ==="
 	@echo "  make test       - Run all tests to verify setup"
@@ -245,6 +246,13 @@ arithmetic:
 		echo "❌ No pre-trained model found. Running full pipeline..."; \
 		$(MAKE) pipeline TASK=arithmetic; \
 	fi
+
+# Evaluate arithmetic accuracy (defaults to the mid-trained model for CONFIG/TASK)
+EVAL_N ?= 50
+eval-arithmetic:
+	python scripts/training/pipeline/eval_arithmetic.py \
+		--model $(or $(MODEL),$(MIDTRAIN_DIR)) \
+		--num-per-category $(EVAL_N)
 
 # Test installation and basic functionality
 test:
