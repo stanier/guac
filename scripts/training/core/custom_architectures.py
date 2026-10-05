@@ -468,7 +468,7 @@ class ConvolutionalLayer(nn.Module):
             in_channels=config.hidden_size,
             out_channels=config.hidden_size,
             kernel_size=config.conv_kernel_size,
-            padding=config.conv_kernel_size // 2,
+            padding=0,  # Causal left-padding is applied in forward()
             groups=config.conv_groups
         )
 
@@ -491,6 +491,8 @@ class ConvolutionalLayer(nn.Module):
         # Convolutional processing
         # Conv1d expects (batch, channels, sequence) format
         conv_input = normed_states.transpose(1, 2)  # (batch, hidden_size, seq_len)
+        # Left-pad only so position t never sees tokens after t (causal)
+        conv_input = F.pad(conv_input, (self.conv1d.kernel_size[0] - 1, 0))
         conv_output = self.conv1d(conv_input)
         conv_output = conv_output.transpose(1, 2)  # back to (batch, seq_len, hidden_size)
 
@@ -1355,13 +1357,12 @@ class FlashAttentionLayer(nn.Module):
         # Apply causal mask
         causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=q.device))
         causal_mask = causal_mask.view(1, 1, seq_len, seq_len)
-        attn_scores = attn_scores.masked_fill(causal_mask == 0, float('-inf'))
+        attn_scores = attn_scores.masked_fill(causal_mask == 0, torch.finfo(attn_scores.dtype).min)
 
-        # Apply attention mask if provided
+        # Apply attention mask if provided (masked_fill avoids 0 * -inf = NaN)
         if attention_mask is not None:
-            extended_mask = attention_mask[:, None, None, :]
-            extended_mask = (1.0 - extended_mask) * float('-inf')
-            attn_scores = attn_scores + extended_mask
+            padding_mask = attention_mask[:, None, None, :] == 0
+            attn_scores = attn_scores.masked_fill(padding_mask, torch.finfo(attn_scores.dtype).min)
 
         # Softmax and dropout
         attn_weights = F.softmax(attn_scores, dim=-1)

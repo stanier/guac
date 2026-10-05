@@ -410,7 +410,9 @@ def create_model(config: Dict[str, Any], tokenizer: Any, print_params: bool = Fa
         use_rms_norm=config.get('use_rms_norm', True),
         use_flash_attention=config.get('use_flash_attention', True),
         layer_norm_eps=config.get('layer_norm_eps', 1e-6),
-        **{k: v for k, v in config.items() if k.startswith(('num_experts', 'moe_', 'moh_'))}
+        **{k: v for k, v in config.items()
+           if k.startswith(('num_experts', 'num_shared_experts', 'moe_', 'moh_',
+                            'mamba_', 'conv_', 'based_', 'flash_attn_'))}
     )
 
     model = MixedLayerForCausalLM(model_config)
@@ -446,6 +448,7 @@ def create_training_arguments(config: Dict[str, Any], output_dir: str) -> Traini
         eval_steps=config.get('step_val', 100) * 5,
         save_total_limit=3,
         fp16=config.get('fp16', True),
+        bf16=config.get('bf16', False),
         gradient_checkpointing=True,
         dataloader_drop_last=True,
         dataloader_num_workers=0,
