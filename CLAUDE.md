@@ -70,7 +70,6 @@ The core novelty is `MixedLayerConfig` in `scripts/training/core/custom_architec
 ### Key Source Files
 
 - `scripts/training/core/custom_architectures.py` — All layer type implementations and the model; Mamba-2's mixer and chunked SSD scan live in `scripts/training/core/mamba2.py`
-- `scripts/training/core/matryoshka_layers.py` — Matryoshka embedding/attention experiments; not imported by any model or pipeline
 - `scripts/training/core/callbacks.py` — Training monitoring, profiling, live inference
 - `scripts/training/core/dataset_utils.py` — Dataset loading, tokenization, caching
 - `scripts/training/core/path_manager.py` — Centralized path resolution from `site_config.yml`
@@ -79,8 +78,6 @@ The core novelty is `MixedLayerConfig` in `scripts/training/core/custom_architec
 ### Configuration
 
 **`model_configs.yaml`** — Model size presets, named after their approximate parameter count. Sizes range from `guac-43m` (512 hidden, 4 layers) through `guac-3b` (3072 hidden, 24 layers, development default) up to `guac-48b` (8192 hidden, 64 layers). Each preset includes hyperparameters (lr, batch size, warmup ratio).
-
-**`architecture_configs.yaml`** — Architecture definitions (`mixed_layer`, `basic_transformer`, `llama`, `qwen2`, `granite`). Only read by the legacy scripts in `scripts/legacy/`; the current pipeline builds models from `model_configs.yaml`.
 
 **`site_config.yml`** — Environment-specific paths and dataset configurations (git-ignored; copy from `site_config.example.yml`). Controls `scratch_dir` layout, HuggingFace dataset streaming settings, and which datasets are used per stage.
 
