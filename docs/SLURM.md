@@ -186,7 +186,7 @@ sbatch --export=ALL,VOCAB_SIZE=100000,PRETRAIN_CONFIG=guac-3b,MIDTRAIN_TASK=reas
 ### Production Training (Longer Runtime)
 ```bash
 sbatch --time=72:00:00 \
-    --export=PRETRAIN_CONFIG=guac-3b,PRETRAIN_STEPS=50000 \
+    --export=ALL,PRETRAIN_CONFIG=guac-3b,PRETRAIN_STEPS=50000 \
     jobscripts/full_pipeline.sbatch
 ```
 
@@ -201,7 +201,7 @@ sbatch --time=72:00:00 \
 - Reduce batch size in training configs
 - Use gradient accumulation
 - Request more memory: `#SBATCH --mem=128G`
-- Use smaller model config (guac-430m < guac-910m < guac-4.5b < guac-3b)
+- Use smaller model config (guac-430m < guac-910m < guac-1.7b < guac-3b < guac-4.5b)
 
 ### Timeout
 - Increase time limit: `#SBATCH --time=96:00:00`
@@ -237,6 +237,6 @@ sbatch --export=ALL,MIDTRAIN_TASK=custom,MIDTRAIN_DATASETS="/path/to/dataset1 /p
 ## Additional Resources
 
 - Main documentation: `docs/`
-- Model configs: `configs/models/`
+- Model configs: `model_configs.yaml`
 - Training scripts: `guac/pipeline/`
 - Makefile targets: `Makefile`
