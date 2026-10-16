@@ -20,7 +20,10 @@ python -m pytest -k causality                  # tests matching a name
 | `test_causality.py` | Every layer type is causal: perturbing position t never changes outputs before t |
 | `test_model_configs.py` | Every preset in `model_configs.yaml` builds a valid model config; pretraining uses the config's batch/step settings as given |
 | `test_cache_keys.py` | Tokenized-dataset cache keys change with the tokenizer, dataset settings, sequence length and debug subset |
-| `test_moh.py` | Mixture-of-Head attention forward/backward shapes |
+| `test_block_structure.py` | Every layer type is the same pre-norm mixer + FFN block; per-layer FFN types and widths; parameter matching |
+| `test_based.py` | BASED: Taylor feature map, chunked linear attention against the quadratic form (values, gradients, carried state); sliding-window attention against a banded mask |
+| `test_moh.py` | Mixture-of-Head attention: with all heads at equal gates it is multi-head attention, unselected heads contribute nothing |
+| `test_moe.py` | MoE: vectorized dispatch against a per-token loop, the Switch load-balancing loss (formula, router gradient, padding), added to the training loss only, under gradient checkpointing too |
 | `test_path_manager.py` | All generated paths resolve under `SCRATCH_DIR` |
 | `test_vocab_pipeline.py` | Tokenizer vocab spec loading, validation and partition deduplication |
 

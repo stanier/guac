@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import PretrainedConfig, PreTrainedModel
-from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_outputs import CausalLMOutputWithPast, MoeCausalLMOutputWithPast
 from transformers.generation.utils import GenerationMixin
 from typing import Optional, Tuple, Union, List, Dict, Any
 
@@ -823,29 +823,11 @@ class MixtureOfHeadAttention(nn.Module):
             dropout_p=self.attention_dropout if self.training else 0.0,
         )  # [batch_size, num_heads, seq_len, head_dim]
 
-        # Combine heads with per-token sparse mixture weights (unselected heads get 0)
-        attn_output = torch.einsum('bhld,blh->bld', attn_output, head_weights)  # [batch_size, seq_len, head_dim]
-
-        # The result should be [batch_size, seq_len, head_dim * top_k] but we want [batch_size, seq_len, hidden_size]
-        # We need to carefully handle the output projection to map from reduced dimensions to full hidden_size
-        current_dim = attn_output.size(-1)
-
-        if current_dim != self.hidden_size:
-            # Create a temporary projection that maps from current_dim to hidden_size
-            # In practice, this would be learned, but for now we'll use a subset of the output projection
-            scale_factor = self.hidden_size / current_dim
-            attn_output = attn_output * scale_factor  # Scale to compensate for reduced heads
-
-            # Repeat across the head dimension to restore full size
-            repeat_count = self.hidden_size // current_dim
-            remainder = self.hidden_size % current_dim
-
-            if repeat_count > 0:
-                repeated = attn_output.repeat(1, 1, repeat_count)
-                if remainder > 0:
-                    attn_output = torch.cat([repeated, attn_output[:, :, :remainder]], dim=-1)
-                else:
-                    attn_output = repeated
+        # Scale each head's output by its gate (0 for heads not selected at that
+        # token) and concatenate the heads, so O = sum_h g_h * head_h @ W_O^h as in
+        # the MoH paper. Every selected head keeps its own subspace.
+        attn_output = attn_output * head_weights.transpose(1, 2).unsqueeze(-1)
+        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.num_attention_heads * self.head_dim)
 
         # Apply output projection
         return self.o_proj(attn_output)
@@ -897,6 +879,8 @@ class SharedExpertMoE(nn.Module):
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
 
+        self.aux_loss = None
+
         # MoE configuration
         self.num_experts = getattr(config, 'num_experts', 8)
         self.num_experts_per_token = getattr(config, 'num_experts_per_token', 2)
@@ -925,95 +909,87 @@ class SharedExpertMoE(nn.Module):
         """Create a single expert (FFN) with SwiGLU activation."""
         return SwiGLUFeedForward(self.hidden_size, swiglu_hidden_size(self.intermediate_size))
 
-    def _compute_routing_weights(self, hidden_states):
-        """Compute routing weights with load balancing."""
-        batch_size, seq_len, _ = hidden_states.shape
+    def route(self, tokens):
+        """
+        Router probabilities and each token's top-k experts.
 
-        # Router logits
-        router_logits = self.router(hidden_states)  # [batch, seq, num_experts]
+        tokens is (num_tokens, hidden). Returns the probabilities over all experts
+        (num_tokens, num_experts), and the top-k expert indices with their weights
+        renormalized to sum to 1 (both (num_tokens, top_k)).
+        """
+        router_logits = self.router(tokens)
 
-        # Add noise for training stability (like Switch Transformer)
+        # Add noise for exploration during training (like Switch Transformer)
         if self.training and self.moe_noise_std > 0:
-            noise = torch.randn_like(router_logits) * self.moe_noise_std
-            router_logits = router_logits + noise
+            router_logits = router_logits + torch.randn_like(router_logits) * self.moe_noise_std
 
-        # Apply temperature
-        router_logits = router_logits / self.moe_temperature
-
-        # Compute routing probabilities
-        routing_weights = torch.softmax(router_logits, dim=-1)
-
-        # Top-k expert selection
-        top_k_weights, top_k_indices = torch.topk(
-            routing_weights, self.moe_top_k, dim=-1
-        )
-
-        # Renormalize top-k weights
+        router_probs = torch.softmax(router_logits / self.moe_temperature, dim=-1)
+        top_k_weights, top_k_indices = torch.topk(router_probs, self.moe_top_k, dim=-1)
         top_k_weights = top_k_weights / top_k_weights.sum(dim=-1, keepdim=True)
+        return router_probs, top_k_weights, top_k_indices
 
-        # Load balancing loss (encourage balanced expert usage)
-        if self.training:
-            # Auxiliary loss to encourage equal expert usage
-            router_probs = torch.softmax(router_logits, dim=-1)
-            expert_usage = router_probs.mean(dim=[0, 1])  # [num_experts]
-            balance_loss = self.load_balancing_weight * (
-                expert_usage * expert_usage.numel()
-            ).sum()
-            self.balance_loss = balance_loss
-        else:
-            self.balance_loss = 0.0
+    def load_balancing_loss(self, router_probs, top_k_indices, token_weights=None):
+        """
+        Switch Transformer auxiliary loss, moe_load_balancing_weight * N * sum_i f_i * P_i,
+        where f_i is the fraction of top-k assignments that go to expert i and P_i
+        is the mean router probability of expert i. It equals the weight when
+        routing is uniform and grows as routing concentrates; the gradient reaches
+        the router through P_i. token_weights (num_tokens,) excludes padding.
+        """
+        if token_weights is None:
+            token_weights = torch.ones(router_probs.size(0), device=router_probs.device)
+        token_weights = token_weights.to(router_probs.dtype)
+        num_tokens = token_weights.sum().clamp(min=1)
+        assignments = F.one_hot(top_k_indices, self.num_experts).sum(dim=1).to(router_probs.dtype)
+        fraction_routed = (assignments * token_weights[:, None]).sum(0) / (num_tokens * self.moe_top_k)
+        mean_probability = (router_probs * token_weights[:, None]).sum(0) / num_tokens
+        return self.load_balancing_weight * self.num_experts * (fraction_routed * mean_probability).sum()
 
-        return top_k_weights, top_k_indices, routing_weights
+    def dispatch(self, tokens, top_k_weights, top_k_indices):
+        """
+        Sum of each token's top-k expert outputs, weighted by the router.
 
-    def forward(self, hidden_states):
-        """Forward pass through shared + routed experts."""
+        Assignments are sorted by expert, so each expert runs once on a contiguous
+        batch of its tokens, and the results are scattered back with index_add_.
+        """
+        num_tokens, top_k = top_k_indices.shape
+        flat_indices = top_k_indices.reshape(-1)
+        order = flat_indices.argsort(stable=True)
+        token_of_assignment = torch.arange(num_tokens, device=tokens.device).repeat_interleave(top_k)[order]
+        weight_of_assignment = top_k_weights.reshape(-1)[order]
+        counts = torch.bincount(flat_indices, minlength=self.num_experts).tolist()
+
+        output = torch.zeros_like(tokens)
+        for expert, token_idx, weight in zip(self.routing_experts, token_of_assignment.split(counts),
+                                             weight_of_assignment.split(counts)):
+            if token_idx.numel():
+                expert_output = expert(tokens[token_idx]) * weight[:, None]
+                output.index_add_(0, token_idx, expert_output.to(output.dtype))
+        return output
+
+    def forward(self, hidden_states, attention_mask=None):
+        """
+        Shared experts plus routed experts. Sets self.aux_loss to the load-balancing
+        loss (None without routed experts); the model adds it to the training loss.
+        """
         batch_size, seq_len, hidden_size = hidden_states.shape
 
-        # Initialize output
         expert_output = torch.zeros_like(hidden_states)
 
         # Shared experts (always active)
         if self.num_shared_experts > 0:
             for shared_expert in self.shared_experts:
-                shared_output = shared_expert(hidden_states)
-                expert_output = expert_output + shared_output / self.num_shared_experts
+                expert_output = expert_output + shared_expert(hidden_states) / self.num_shared_experts
 
-        # Routing experts (conditionally active)
+        self.aux_loss = None
         if self.num_experts > 0:
-            # Compute routing
-            top_k_weights, top_k_indices, _ = self._compute_routing_weights(hidden_states)
+            tokens = hidden_states.reshape(-1, hidden_size)
+            router_probs, top_k_weights, top_k_indices = self.route(tokens)
+            routed = self.dispatch(tokens, top_k_weights, top_k_indices)
+            expert_output = expert_output + routed.view(batch_size, seq_len, hidden_size)
 
-            # Flatten for expert processing
-            flat_hidden = hidden_states.view(-1, hidden_size)  # [batch*seq, hidden]
-            flat_top_k_weights = top_k_weights.view(-1, self.moe_top_k)  # [batch*seq, top_k]
-            flat_top_k_indices = top_k_indices.view(-1, self.moe_top_k)  # [batch*seq, top_k]
-
-            # Process through selected experts
-            flat_expert_output = torch.zeros_like(flat_hidden)
-
-            for i, expert in enumerate(self.routing_experts):
-                # Find tokens that use this expert
-                expert_mask = (flat_top_k_indices == i).any(dim=-1)
-
-                if expert_mask.any():
-                    # Get tokens for this expert
-                    expert_tokens = flat_hidden[expert_mask]
-
-                    # Process through expert
-                    expert_result = expert(expert_tokens)
-
-                    # Get weights for this expert
-                    token_indices = torch.where(expert_mask)[0]
-                    for j, token_idx in enumerate(token_indices):
-                        # Find weight for this expert for this token
-                        expert_positions = (flat_top_k_indices[token_idx] == i).nonzero().squeeze(-1)
-                        if len(expert_positions) > 0:
-                            weight = flat_top_k_weights[token_idx, expert_positions[0]]
-                            flat_expert_output[token_idx] += weight * expert_result[j]
-
-            # Reshape back and add to output
-            routing_output = flat_expert_output.view(batch_size, seq_len, hidden_size)
-            expert_output = expert_output + routing_output
+            token_weights = None if attention_mask is None else attention_mask[:, -seq_len:].reshape(-1)
+            self.aux_loss = self.load_balancing_loss(router_probs, top_k_indices, token_weights)
 
         return expert_output
 
@@ -1075,9 +1051,22 @@ class MixedTransformerLayer(nn.Module):
     def forward(self, hidden_states, attention_mask=None):
         if self.mixer is not None:
             hidden_states = hidden_states + self.dropout(self.mixer(self.mixer_norm(hidden_states), attention_mask))
-        if self.ffn is not None:
+        if self.ffn_type == "moe":
+            # The mask keeps padding out of the load-balancing statistics
+            hidden_states = hidden_states + self.dropout(self.ffn(self.ffn_norm(hidden_states), attention_mask))
+        elif self.ffn is not None:
             hidden_states = hidden_states + self.dropout(self.ffn(self.ffn_norm(hidden_states)))
         return hidden_states
+
+    @property
+    def aux_loss(self):
+        """The MoE load-balancing loss from the last forward pass, or None for other FFNs."""
+        return self.ffn.aux_loss if self.ffn_type == "moe" else None
+
+
+def _run_layer(layer, hidden_states, attention_mask):
+    hidden_states = layer(hidden_states, attention_mask)
+    return hidden_states, layer.aux_loss
 
 
 def param_matched_ffn_hidden_sizes(config, reference_layer_type: str = "full_attention") -> List[int]:
@@ -1251,22 +1240,18 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
         hidden_states = inputs_embeds + position_embeds
         hidden_states = self.embedding_dropout(hidden_states)
 
-        # Pass through mixed transformer layers
+        # Pass through mixed transformer layers, collecting MoE load-balancing losses
+        aux_loss = None
         for layer in self.layers:
             if self.gradient_checkpointing and self.training:
-                def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        return module(*inputs)
-                    return custom_forward
-
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(layer),
-                    hidden_states,
-                    attention_mask,
-                    use_reentrant=False
+                # The aux loss is returned from inside the checkpoint, so its graph is recomputed with the layer's
+                hidden_states, layer_aux_loss = torch.utils.checkpoint.checkpoint(
+                    _run_layer, layer, hidden_states, attention_mask, use_reentrant=False
                 )
             else:
-                hidden_states = layer(hidden_states, attention_mask)
+                hidden_states, layer_aux_loss = _run_layer(layer, hidden_states, attention_mask)
+            if layer_aux_loss is not None:
+                aux_loss = layer_aux_loss if aux_loss is None else aux_loss + layer_aux_loss
 
         # Final layer norm
         hidden_states = self.final_layer_norm(hidden_states)
@@ -1286,13 +1271,17 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
+            # The load-balancing loss trains the routers. Eval loss leaves it out so it stays perplexity
+            if aux_loss is not None and self.training:
+                loss = loss + aux_loss
 
         if not return_dict:
             output = (logits,)
             return (loss,) + output if loss is not None else output
 
-        return CausalLMOutputWithPast(
+        return MoeCausalLMOutputWithPast(
             loss=loss,
+            aux_loss=aux_loss,
             logits=logits,
             past_key_values=None,  # Not implemented for simplicity
             hidden_states=None,

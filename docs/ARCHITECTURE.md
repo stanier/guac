@@ -208,6 +208,31 @@ class GroupedQueryAttention:
 - **Causal Masking**: Lower triangular attention
 - **Stable Computation**: Proper scaling and normalization
 
+### 7. Mixture-of-Head Attention
+
+**Purpose**: Attention heads as experts (MoH, Jin et al. 2024): each token uses its top-k heads.
+
+`moh_attention` computes every head, then a per-token router (a small MLP on the
+token's own hidden state, so routing stays causal) picks `moh_top_k` heads and
+gives them softmax gates. The output is `o_proj(concat_h(g_h * head_h))`: each
+selected head keeps its own subspace of the output projection, and unselected
+heads contribute nothing. With all heads selected at equal gates it reduces to
+multi-head attention scaled by 1/H (tested).
+
+### 8. Shared-Expert MoE (an FFN option)
+
+`SharedExpertMoE` replaces the SwiGLU FFN where `ffn_types` says `moe` (the
+default for `shared_expert_moe` layers, and allowed after any mixer). Shared
+experts always run; each token also goes to its top `moe_top_k` of `num_experts`
+routed experts, weighted by renormalized router probabilities. Dispatch sorts
+assignments by expert so each expert runs once per batch.
+
+**Load balancing**: each MoE layer computes the Switch Transformer loss
+`moe_load_balancing_weight * N * sum_i f_i * P_i` (f_i: fraction of assignments
+to expert i, P_i: its mean router probability; padding excluded). The model sums
+it over layers, returns it as `aux_loss`, and adds it to `loss` in training mode
+only, so evaluation loss stays the language-modeling loss.
+
 ## 🔧 Configuration System
 
 ### Architecture Selection

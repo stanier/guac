@@ -96,4 +96,4 @@ python scripts/hf_partial_download.py --csv datasets_download.csv
 
 ## Testing
 
-Tests live in `tests/` and run with pytest on CPU, with no GPU, network or trained artifacts needed; CI runs them on every push. They cover model save/load round trips, attention-mask handling and causality for every layer type, preset validity in `model_configs.yaml`, cache keys, the path manager, the tokenizer vocab pipeline, and mixture-of-heads layers. See `tests/README.md`.
+Tests live in `tests/` and run with pytest on CPU, with no GPU, network or trained artifacts needed; CI runs them on every push. They cover model save/load round trips, attention-mask handling and causality for every layer type, preset validity in `model_configs.yaml`, cache keys, the path manager, the tokenizer vocab pipeline, and the BASED, mixture-of-heads and MoE layers against reference implementations. See `tests/README.md`.

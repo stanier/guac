@@ -126,6 +126,10 @@ shape, `[batch, seq_len, hidden_size]`. They are registered in `MIXERS`.
 - `SwiGLUFeedForward(hidden_size, intermediate_size)`: the default FFN.
 - `SharedExpertMoE(config)`: shared plus routed SwiGLU experts (`num_experts`,
   `num_shared_experts`, `moe_top_k`, ...). Used where `ffn_types` says `moe`.
+  `forward(hidden_states, attention_mask=None)` sets `aux_loss`, the Switch
+  load-balancing loss (`moe_load_balancing_weight * N * sum_i f_i * P_i`).
+  `MixedLayerForCausalLM` returns the sum over layers as `outputs.aux_loss`
+  and adds it to `outputs.loss` in training mode only.
 
 ### Parameter helpers
 
