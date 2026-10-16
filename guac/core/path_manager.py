@@ -18,7 +18,13 @@ import warnings
 
 
 class PathManager:
-    """Centralized path manager for all Guac training outputs."""
+    """
+    Centralized path manager for all Guac training outputs.
+
+    Getters only compute paths; whatever writes to a path creates it
+    (save_to_disk, save_pretrained, Trainer). Only get_temp_dir and
+    ensure_dir_exists create directories.
+    """
 
     def __init__(self, config_path: Optional[str] = None):
         """Initialize path manager with site configuration.
@@ -123,7 +129,6 @@ class PathManager:
         dirs = self._get_directories()
         path = dirs.get('datasets', {}).get('huggingface_cache', './scratch/datasets/huggingface_cache')
         result = Path(path).resolve()
-        result.mkdir(parents=True, exist_ok=True)
         return result
 
     def get_generated_dataset_dir(self) -> Path:
@@ -131,7 +136,6 @@ class PathManager:
         dirs = self._get_directories()
         path = dirs.get('datasets', {}).get('generated', './scratch/datasets/generated')
         result = Path(path).resolve()
-        result.mkdir(parents=True, exist_ok=True)
         return result
 
     def get_dataset_configs(self) -> Dict[str, Any]:
@@ -153,7 +157,6 @@ class PathManager:
             path = base_dir / dataset_name
 
         result = Path(path).resolve()
-        result.mkdir(parents=True, exist_ok=True)
         return result
 
     # === Tokenized Dataset Paths ===
@@ -169,7 +172,6 @@ class PathManager:
         dirs = self._get_directories()
         path = dirs.get('tokenized_datasets', {}).get('cache_dir', './scratch/tokenized_datasets/cache')
         result = Path(path).resolve()
-        result.mkdir(parents=True, exist_ok=True)
         return result
 
     def get_tokenized_dataset_path(self, stage: str, cache_key: str) -> Path:
@@ -192,7 +194,6 @@ class PathManager:
 
         result = Path(base_path) / f"tokenized_cache_{cache_key}"
         result = result.resolve()
-        result.mkdir(parents=True, exist_ok=True)
         return result
 
     # === Tokenizer Paths ===
@@ -227,7 +228,6 @@ class PathManager:
             result = Path(base_path) / "default"
 
         result = result.resolve()
-        result.mkdir(parents=True, exist_ok=True)
         return result
 
     # === Model Paths ===
@@ -268,7 +268,6 @@ class PathManager:
 
         result = Path(stage_base) / "_".join(path_components)
         result = result.resolve()
-        result.mkdir(parents=True, exist_ok=True)
         return result
 
     def get_checkpoint_dir(self, stage: str, config_name: str, task: Optional[str] = None) -> Path:
@@ -291,7 +290,6 @@ class PathManager:
 
         result = Path(checkpoint_base) / "_".join(path_components)
         result = result.resolve()
-        result.mkdir(parents=True, exist_ok=True)
         return result
 
     # === Temporary Paths ===

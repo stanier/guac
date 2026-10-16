@@ -110,3 +110,21 @@ def test_path_manager():
 
 if __name__ == "__main__":
     test_path_manager()
+
+def test_getters_do_not_create_directories(tmp_path):
+    """Directories appear only when something is written there, so existence means content."""
+    import yaml
+    from guac.core.path_manager import PathManager
+
+    example = yaml.safe_load((project_root / "site_config.example.yml").read_text())
+    example['directories']['scratch_dir'] = str(tmp_path / "scratch")
+    config_path = tmp_path / "site_config.yml"
+    config_path.write_text(yaml.safe_dump(example))
+
+    pm = PathManager(config_path)
+    paths = [pm.get_tokenized_dataset_path("pretraining", "key"), pm.get_tokenizer_output_path("sentencepiece", "t"),
+             pm.get_model_output_path("pretraining", "guac-3b"), pm.get_checkpoint_dir("pretraining", "guac-3b"),
+             pm.get_dataset_path("d"), pm.get_huggingface_cache_dir()]
+    assert all(str(path).startswith(str(tmp_path)) for path in paths)
+    assert not (tmp_path / "scratch").exists()
+    assert pm.get_temp_dir("work").is_dir()  # temp directories are created on request
