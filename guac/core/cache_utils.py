@@ -120,7 +120,15 @@ def tokenizer_fingerprint(tokenizer: Any) -> str:
         Hex digest prefix
     """
     backend = getattr(tokenizer, 'backend_tokenizer', None)
-    description = backend.to_str() if backend is not None else json.dumps(sorted(tokenizer.get_vocab().items()))
+    if backend is not None:
+        definition = json.loads(backend.to_str())
+        # The serialization also records the truncation and padding of the last call, which
+        # aren't part of the tokenizer and would make the key depend on what ran before
+        definition.pop('truncation', None)
+        definition.pop('padding', None)
+        description = json.dumps(definition, sort_keys=True)
+    else:
+        description = json.dumps(sorted(tokenizer.get_vocab().items()))
     return content_hash(description + json.dumps(tokenizer.special_tokens_map, sort_keys=True, default=str))
 
 

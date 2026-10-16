@@ -104,7 +104,10 @@ def to_segments(record: Dict[str, Any]) -> List[Tuple[str, bool]]:
         return segments
 
     instruction = record.get('instruction')
-    response = record.get('output', record.get('response'))
+    # Not get('output', default): mixed datasets have every column, with None where a record lacks one
+    response = record.get('output')
+    if response is None:
+        response = record.get('response')
     if instruction is None or response is None:
         raise ValueError(f"Record has neither messages nor instruction plus output/response: {sorted(record)}")
     context = record.get('input') or record.get('context')

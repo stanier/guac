@@ -109,3 +109,13 @@ def test_synthetic_set_comes_from_the_arithmetic_training_pool():
 def test_unknown_dataset_names_are_an_error():
     with pytest.raises(ValueError, match="Unknown post-training dataset"):
         load_records("not-a-dataset")
+
+
+def test_alpaca_and_dolly_style_datasets_mix(tmp_path):
+    """Concatenating them fills each one's missing columns with None, which used to hide 'response'."""
+    alpaca, dolly = tmp_path / "alpaca.json", tmp_path / "dolly.json"
+    alpaca.write_text(json.dumps([{'instruction': "add", 'input': "1 2", 'output': "3"}]))
+    dolly.write_text(json.dumps([{'instruction': "name", 'context': "", 'response': "guac"}]))
+    dataset = prepare_posttraining_dataset([str(alpaca), str(dolly)], make_tokenizer(), max_length=128)
+    tokenizer = make_tokenizer()
+    assert [trained_text(tokenizer, example) for example in dataset] == ["3[EOS]", "guac[EOS]"]

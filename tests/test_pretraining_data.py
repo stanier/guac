@@ -157,3 +157,28 @@ def test_run_info_records_what_reproduces_a_run(tmp_path):
     assert info['model_config']['layer_types'] == ["conv"]
     assert len(info['git']['commit']) == 40
     assert info['datasets'] == ['x']
+
+
+def test_packing_a_stream_with_unknown_columns(tmp_path):
+    """Streams built from generators or CSV report no column names; packing must still drop them."""
+    tokenizer = make_tokenizer()
+    stream = IterableDataset.from_generator(lambda: ({'text': "w1 w2 w3 w4 w5", 'id': i} for i in range(20)))
+    assert stream.column_names is None
+    packed = list(tokenize_dataset_with_cache(stream, tokenizer, str(tmp_path / "c"), max_length=8, pack=True))
+    assert packed and all(set(row) == {'input_ids'} and len(row['input_ids']) == 8 for row in packed)
+
+
+def test_debug_runs_never_fill_the_full_runs_cache(tmp_path, monkeypatch):
+    """A --debug run on a stream used to cache its 200-document validation set under the full run's key."""
+    from guac.pipeline import pretrain
+
+    def splits(names, validation_docs, seed=0):
+        stream = IterableDataset.from_generator(lambda: ({'text': f"w{i % 20} w1 w2 w3"} for i in range(3000)))
+        return stream, Dataset.from_dict({'text': [" ".join(["w2"] * 12) for _ in range(500)]})
+
+    monkeypatch.setattr(pretrain, 'load_pretraining_splits', splits)
+    monkeypatch.setattr(pretrain, 'get_cache_directory', lambda kind, key: str(tmp_path / key))
+    tokenizer = make_tokenizer()
+    _, debug_validation = pretrain.prepare_pretraining_data(['s'], tokenizer, 16, pack=False, validation_docs=500, debug=True)
+    _, full_validation = pretrain.prepare_pretraining_data(['s'], tokenizer, 16, pack=False, validation_docs=500)
+    assert len(debug_validation) == 200 and len(full_validation) == 500

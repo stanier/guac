@@ -208,7 +208,10 @@ def tokenize_dataset_with_cache(
 
     print(f"🔤 Tokenizing dataset{' (packing into ' + str(max_length) + '-token blocks)' if pack else ''}...")
     progress = {} if is_streaming(dataset) else {'desc': "Tokenizing"}
-    tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=dataset.column_names, **progress)
+    # Streaming datasets with unknown features report no column names; read them off the first record,
+    # since a batched map that changes the row count must drop every input column
+    columns = dataset.column_names or list(next(iter(dataset)).keys())
+    tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=columns, **progress)
     if not pack:
         progress = {} if is_streaming(dataset) else {'desc': "Filtering short sequences"}
         tokenized_dataset = tokenized_dataset.filter(lambda x: len(x['input_ids']) > 10, **progress)

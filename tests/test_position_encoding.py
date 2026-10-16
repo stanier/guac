@@ -127,3 +127,20 @@ def test_renamed_presets_match_their_names(preset):
     size = preset.split('-')[1]
     named = float(size[:-1]) * (1e9 if size.endswith('b') else 1e6)
     assert abs(params - named) / named < 0.1, f"{preset} has {params:,} parameters"
+
+
+def test_absolute_positions_ignore_left_padding():
+    """Positions count real tokens, so batched generation with left padding sees the same positions."""
+    torch.manual_seed(0)
+    model = MixedLayerForCausalLM(make_config(["full_attention", "conv"], use_absolute_position_embeddings=True)).eval()
+    real = torch.randint(1, 50, (1, 6))
+    padded = torch.cat([torch.zeros(1, 4, dtype=torch.long), real], dim=1)
+    mask = torch.tensor([[0] * 4 + [1] * 6])
+    with torch.no_grad():
+        expected = model(input_ids=real).logits
+        torch.testing.assert_close(model(input_ids=padded, attention_mask=mask).logits[:, 4:], expected,
+                                   atol=1e-5, rtol=1e-4)
+        batched = model.generate(padded, attention_mask=mask, max_new_tokens=5, do_sample=False,
+                                 pad_token_id=0, eos_token_id=None)
+        alone = model.generate(real, max_new_tokens=5, do_sample=False, pad_token_id=0, eos_token_id=None)
+    assert torch.equal(batched[0, 4:], alone[0])

@@ -1204,7 +1204,10 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
 
         hidden_states = inputs_embeds
         if self.position_embeddings is not None:
-            if position_ids is None:
+            if position_ids is None and attention_mask is not None:
+                # Count real tokens only, so left padding doesn't shift a row's positions
+                position_ids = (attention_mask.long().cumsum(-1) - 1).clamp(min=0)[:, -seq_length:]
+            elif position_ids is None:
                 position_ids = torch.arange(past_length, past_length + seq_length, dtype=torch.long,
                                             device=inputs_embeds.device)
                 position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)

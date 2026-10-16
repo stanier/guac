@@ -29,7 +29,7 @@ from datasets import load_dataset, load_from_disk, concatenate_datasets, Iterabl
 from guac.core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
 from guac.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes, flop_matched_ffn_hidden_sizes
 from guac.core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
-from guac.core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
+from guac.core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator, is_streaming
 from guac.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
 
 
@@ -166,10 +166,15 @@ def prepare_pretraining_data(dataset_names: List[str], tokenizer: Any, max_lengt
     """
     train, validation = load_pretraining_splits(dataset_names, validation_docs)
 
+    # The debug subset is part of every split's cache key, so a debug run never
+    # fills the cache full runs read (streaming data included)
     debug_samples = None
     if debug:
         print("Debug mode: using smaller dataset")
-        if hasattr(train, 'select'):
+        if is_streaming(train):
+            debug_samples = 1000
+            train = train.take(debug_samples)
+        else:
             debug_samples = min(1000, len(train))
             train = train.select(range(debug_samples))
         if validation is not None:

@@ -68,3 +68,11 @@ def test_split_packing_and_holdout_get_their_own_keys(site_datasets, change):
     """The hold-out size changes the training split too, so it is part of the key."""
     tokenizer = make_tokenizer(["a", "b", "c"])
     assert pretraining_cache_key(['fineweb'], tokenizer, 256, **change) != pretraining_cache_key(['fineweb'], tokenizer, 256)
+
+
+def test_tokenizer_fingerprint_ignores_call_time_truncation(site_datasets):
+    """Tokenizing with truncation records it in the backend; the cache key must not change with it."""
+    tokenizer = make_tokenizer(["a", "b", "c"])
+    before = pretraining_cache_key(['fineweb'], tokenizer, 256)
+    tokenizer(["a b c"], truncation=True, max_length=2)
+    assert pretraining_cache_key(['fineweb'], tokenizer, 256) == before
