@@ -234,6 +234,20 @@ sbatch --export=ALL,MIDTRAIN_TASK=custom,MIDTRAIN_DATASETS="/path/to/dataset1 /p
     jobscripts/full_pipeline.sbatch
 ```
 
+## Layer-Type Sweeps
+
+`jobscripts/sweep.sbatch` runs a sweep spec as a job array, one GPU per array
+task, each taking every Nth run of the sweep (`sweep.py --shard`). Results from
+all array tasks land in one `scratch/sweeps/<name>/` table.
+
+```bash
+sbatch jobscripts/sweep.sbatch                                          # sweeps/recall_scaled.yaml
+sbatch --export=ALL,BUDGET="--flop-match full_attention" jobscripts/sweep.sbatch
+sbatch --export=ALL,SPEC=sweeps/lm_scaled.yaml --array=0-3 jobscripts/sweep.sbatch
+```
+
+Resubmitting skips finished runs. See `sweeps/README.md` for the specs.
+
 ## Additional Resources
 
 - Main documentation: `docs/`

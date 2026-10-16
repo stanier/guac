@@ -207,12 +207,14 @@ def evaluate(model, data: Dict[str, torch.Tensor], batch_size: int = 256) -> Dic
 def train_and_evaluate(model, next_batch: Callable[[int], Dict[str, torch.Tensor]],
                        evaluate_fn: Callable[[Any], Dict[str, float]], steps: int, learning_rate: float = 1e-3,
                        weight_decay: float = 0.1, warmup_steps: int = 100, eval_every: int = 0,
-                       device: Optional[str] = None, log: Callable[[str], None] = print) -> Dict[str, Any]:
+                       device: Optional[str] = None, bf16: bool = False,
+                       log: Callable[[str], None] = print) -> Dict[str, Any]:
     """
     The training loop shared by the diagnostics and sweeps: AdamW, linear
     warmup then cosine decay, gradient clipping at 1.0. next_batch(step)
     returns input_ids and labels; evaluate_fn(model) returns metrics, run
-    every eval_every steps (if set) and at the end.
+    every eval_every steps (if set) and at the end. bf16 runs forward passes
+    under bfloat16 autocast (weights and optimizer state stay float32).
 
     Returns the final metrics, intermediate evaluations, the smoothed training
     loss and the wall time. Raises FloatingPointError if the loss diverges.
@@ -229,11 +231,17 @@ def train_and_evaluate(model, next_batch: Callable[[int], Dict[str, torch.Tensor
         return 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_scale)
+    device_type = torch.device(device).type
+
+    def autocast():
+        return torch.autocast(device_type, dtype=torch.bfloat16, enabled=bf16)
+
     history, running_loss = [], None
     started = time.time()
     for step in range(steps):
         batch = next_batch(step)
-        out = model(input_ids=batch['input_ids'].to(device), labels=batch['labels'].to(device))
+        with autocast():
+            out = model(input_ids=batch['input_ids'].to(device), labels=batch['labels'].to(device))
         loss = out.loss.item()
         if not math.isfinite(loss):
             raise FloatingPointError(f"Loss became {loss} at step {step}")
@@ -244,15 +252,18 @@ def train_and_evaluate(model, next_batch: Callable[[int], Dict[str, torch.Tensor
         optimizer.zero_grad(set_to_none=True)
         running_loss = loss if running_loss is None else 0.98 * running_loss + 0.02 * loss
         if eval_every and (step + 1) % eval_every == 0 and step + 1 < steps:
-            metrics = evaluate_fn(model)
+            with autocast():
+                metrics = evaluate_fn(model)
             history.append({'step': step + 1, **metrics})
             log(f"  step {step + 1:6d}  train loss {running_loss:.4f}  " +
                 "  ".join(f"{k} {v:.4f}" for k, v in metrics.items()))
 
+    with autocast():
+        final = evaluate_fn(model)
     return {
         'steps': steps,
         'train_loss': running_loss,
-        'eval': evaluate_fn(model),
+        'eval': final,
         'history': history,
         'seconds': time.time() - started,
         'parameters': sum(p.numel() for p in model.parameters()),

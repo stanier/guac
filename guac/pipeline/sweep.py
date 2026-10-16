@@ -35,10 +35,17 @@ Usage:
 Results go to scratch/sweeps/<name>/ (or --output-dir): results.jsonl gets one
 line per finished run, so an interrupted sweep resumes where it stopped (pass
 --force to rerun everything), and results.md / results.csv hold the table.
+
+To spread a sweep over several jobs (jobscripts/sweep.sbatch), give each one
+--shard I/N: it runs every Nth run starting at I and writes its own
+results.shardI-of-N.jsonl; every shard's table includes all the shards'
+finished runs, and --summarize rebuilds the table from them. --param-match or
+--flop-match replaces the spec's budget, so one spec covers both.
 """
 
 import argparse
 import csv
+import glob
 import json
 import os
 import statistics
@@ -57,7 +64,7 @@ from guac.core.diagnostics import DEFAULT_VOCAB, TASKS, run_diagnostic, run_lang
 from guac.core.pipeline_utils import numbers_in, write_run_info
 from guac.pipeline.pretrain import build_model_config
 
-TRAIN_KEYS = ('batch_size', 'learning_rate', 'weight_decay', 'warmup_steps', 'eval_every')
+TRAIN_KEYS = ('batch_size', 'learning_rate', 'weight_decay', 'warmup_steps', 'eval_every', 'bf16')
 
 
 def load_spec(path: str) -> Dict[str, Any]:
@@ -195,15 +202,50 @@ def summarize(spec, rows: List[Dict[str, Any]], output_dir: str) -> str:
         csv_rows.append(csv_row)
 
     table = "\n".join(lines) + "\n"
-    with open(os.path.join(output_dir, 'results.md'), 'w') as f:
+    # Written to a temporary file and renamed, as shards running at once rewrite these
+    temporary = os.path.join(output_dir, f'.results.md.{os.getpid()}')
+    with open(temporary, 'w') as f:
         f.write(table)
+    os.replace(temporary, os.path.join(output_dir, 'results.md'))
     if csv_rows:
         fields = list(dict.fromkeys(key for row in csv_rows for key in row))
-        with open(os.path.join(output_dir, 'results.csv'), 'w', newline='') as f:
+        temporary = os.path.join(output_dir, f'.results.csv.{os.getpid()}')
+        with open(temporary, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fields)
             writer.writeheader()
             writer.writerows(csv_rows)
+        os.replace(temporary, os.path.join(output_dir, 'results.csv'))
     return table
+
+
+def read_results(output_dir: str) -> List[Dict[str, Any]]:
+    """Every finished run, from results.jsonl and any shards' files."""
+    rows = []
+    for path in sorted(glob.glob(os.path.join(output_dir, 'results*.jsonl'))):
+        with open(path) as f:
+            rows += [json.loads(line) for line in f if line.strip()]
+    return rows
+
+
+def parse_shard(text: str) -> Tuple[int, int]:
+    try:
+        index, count = (int(part) for part in text.split('/'))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"--shard takes I/N, such as 0/4; got {text!r}")
+    if not 0 <= index < count:
+        raise argparse.ArgumentTypeError(f"--shard {text}: need 0 <= I < N")
+    return index, count
+
+
+def apply_budget_override(spec: Dict[str, Any], args) -> Dict[str, Any]:
+    """Replace the spec's budget with --param-match/--flop-match, and name the sweep after it."""
+    if not (args.param_match or args.flop_match):
+        return spec
+    budget = {'param_match': args.param_match} if args.param_match else {'flop_match': args.flop_match}
+    if args.flop_match:
+        budget['seq_len'] = (spec.get('budget') or {}).get('seq_len') or task_seq_len(spec['tasks'][0])
+    suffix = 'param' if args.param_match else 'flop'
+    return {**spec, 'budget': budget, 'name': f"{spec['name']}-{suffix}"}
 
 
 def dry_run(spec) -> None:
@@ -223,39 +265,54 @@ def main():
     parser.add_argument('spec', help='Sweep spec YAML')
     parser.add_argument('--output-dir', help='Default: scratch/sweeps/<name>')
     parser.add_argument('--dry-run', action='store_true', help='Print sizes and FLOPs only')
-    parser.add_argument('--force', action='store_true', help='Rerun runs already in results.jsonl')
+    parser.add_argument('--force', action='store_true', help='Rerun runs already in the results files')
+    parser.add_argument('--shard', type=parse_shard, metavar='I/N',
+                        help='Run only every Nth run, starting at I (0-based), for parallel jobs')
+    parser.add_argument('--summarize', action='store_true', help='Rebuild results.md/csv from finished runs only')
+    budget = parser.add_mutually_exclusive_group()
+    budget.add_argument('--param-match', metavar='LAYER', help="Replace the spec's budget with param_match LAYER")
+    budget.add_argument('--flop-match', metavar='LAYER', help="Replace the spec's budget with flop_match LAYER")
     args = parser.parse_args()
+    if args.force and args.shard:
+        parser.error("--force with --shard would let one shard delete the others' results; "
+                     "remove the output directory instead")
 
-    spec = load_spec(args.spec)
+    spec = apply_budget_override(load_spec(args.spec), args)
     if args.dry_run:
         dry_run(spec)
         return
 
     output_dir = args.output_dir or os.path.join(project_root, 'scratch', 'sweeps', spec['name'])
     os.makedirs(output_dir, exist_ok=True)
-    results_path = os.path.join(output_dir, 'results.jsonl')
-    if args.force and os.path.exists(results_path):
-        os.remove(results_path)
-    done = []
-    if os.path.exists(results_path):
-        with open(results_path) as f:
-            done = [json.loads(line) for line in f if line.strip()]
-    finished = {(r['architecture'], r['task'], r['seed']) for r in done}
+    if args.summarize:
+        print(summarize(spec, read_results(output_dir), output_dir))
+        return
+    if args.force:
+        for path in glob.glob(os.path.join(output_dir, 'results*.jsonl')):
+            os.remove(path)
+    index, count = args.shard or (0, 1)
+    results_path = os.path.join(output_dir, f'results.shard{index}-of-{count}.jsonl' if args.shard
+                                else 'results.jsonl')
+    finished = {(r['architecture'], r['task'], r['seed']) for r in read_results(output_dir)}
     write_run_info(output_dir, 'sweep', spec, args, seed=None, spec_path=os.path.abspath(args.spec))
 
-    for task in spec['tasks']:
-        lm_data = load_lm_data(task) if task['task'] == 'lm' else None
-        for arch_name in spec['architectures']:
-            for seed in spec.get('seeds', [0]):
-                if (arch_name, task_name(task), seed) in finished:
-                    continue
-                row = run_one(spec, arch_name, task, seed, lm_data)
-                with open(results_path, 'a') as f:
-                    f.write(json.dumps(row) + '\n')
-                done.append(row)
-                summarize(spec, done, output_dir)
+    runs = [(task, arch_name, seed) for task in spec['tasks'] for arch_name in spec['architectures']
+            for seed in spec.get('seeds', [0])][index::count]
+    lm_data = {}
+    for task, arch_name, seed in runs:
+        if (arch_name, task_name(task), seed) in finished:
+            continue
+        if task['task'] == 'lm' and task_name(task) not in lm_data:
+            # Shards share the tokenization cache; the first to arrive fills it while the others wait
+            from filelock import FileLock
+            with FileLock(os.path.join(output_dir, '.lm-data.lock')):
+                lm_data = {task_name(task): load_lm_data(task)}
+        row = run_one(spec, arch_name, task, seed, lm_data.get(task_name(task)))
+        with open(results_path, 'a') as f:
+            f.write(json.dumps(row) + '\n')
+        summarize(spec, read_results(output_dir), output_dir)
 
-    print("\n" + summarize(spec, done, output_dir))
+    print("\n" + summarize(spec, read_results(output_dir), output_dir))
     print(f"Results in {output_dir}")
 
 

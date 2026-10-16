@@ -9,12 +9,33 @@ python guac/pipeline/sweep.py sweeps/recall_small.yaml --dry-run   # sizes and F
 python guac/pipeline/sweep.py sweeps/recall_small.yaml             # or: make sweep SPEC=sweeps/recall_small.yaml
 ```
 
+| Spec | What it is |
+|------|------------|
+| `recall_small.yaml` | 2-layer models, one seed, MQAR and induction; about a minute per run on a laptop CPU |
+| `recall_scaled.yaml` | 4 layers at hidden size 256, three seeds, MQAR with 16 to 64 pairs, induction, selective copying and passkey; 162 GPU runs |
+| `lm_scaled.yaml` | The same architectures on WikiText-103 perplexity; needs network access and the 60k SentencePiece tokenizer |
+
+On a cluster, `jobscripts/sweep.sbatch` runs a spec as a job array:
+
+```bash
+sbatch jobscripts/sweep.sbatch                                         # recall_scaled.yaml, parameter-matched
+sbatch --export=ALL,BUDGET="--flop-match full_attention" jobscripts/sweep.sbatch
+sbatch --export=ALL,SPEC=sweeps/lm_scaled.yaml jobscripts/sweep.sbatch
+```
+
+Each array task runs `sweep.py --shard I/N`: every Nth run, written to its own
+`results.shardI-of-N.jsonl` in the shared output directory. Every shard's table
+includes all the shards' finished runs, `--summarize` rebuilds it, and
+resubmitting skips finished runs. `--param-match LAYER` and `--flop-match LAYER`
+replace the spec's budget and add `-param` or `-flop` to the output directory
+name, so one spec gives both comparisons.
+
 Output goes to `scratch/sweeps/<name>/` (or `--output-dir`):
 
 | File | Contents |
 |------|----------|
 | `results.md`, `results.csv` | One row per architecture: layer types, non-embedding parameters, forward MFLOP/token, and per task the held-out example accuracy (or validation perplexity for `lm`), mean ± std over seeds |
-| `results.jsonl` | One line per finished run, with every metric. An interrupted sweep skips these runs when restarted; `--force` reruns all |
+| `results.jsonl` | One line per finished run, with every metric (`results.shardI-of-N.jsonl` per shard). An interrupted sweep skips these runs when restarted; `--force` reruns all |
 | `run_info.json` | The spec, command, git commit and versions |
 
 ## Spec format
@@ -36,7 +57,7 @@ architectures:                 # name: layer types, or a dict with layer_types p
 tasks:
   - task: mqar                 # mqar, selective_copy, induction, passkey (guac/core/diagnostics.py)
     args: {num_kv_pairs: 16, seq_len: 128, vocab_size: 256}
-    steps: 3000                # plus optional batch_size, learning_rate, warmup_steps, eval_every, eval_examples
+    steps: 3000                # plus optional batch_size, learning_rate, warmup_steps, eval_every, eval_examples, bf16
   - task: lm                   # language modeling: validation perplexity on packed text
     tokenizer: scratch/tokenizers/character/ascii
     datasets: [wikitext-103]
@@ -45,7 +66,7 @@ tasks:
     steps: 2000
     name: wikitext ppl         # optional column name
 seeds: [0, 1, 2]
-train: {batch_size: 64, learning_rate: 1e-3}   # defaults for every task
+train: {batch_size: 64, learning_rate: 1e-3}   # defaults for every task; bf16: true for bfloat16 autocast on GPU
 ```
 
 Budgets size each block's SwiGLU FFN (see `param_matched_ffn_hidden_sizes` and

@@ -1,0 +1,69 @@
+# The GPU-sized version of recall_small.yaml: 4-layer models at hidden size
+# 256, three seeds, and recall made harder until fixed-state layers should run
+# out of room (MQAR with 16, 32 and 64 key-value pairs), plus induction,
+# selective copying and passkey retrieval. 9 architectures x 6 tasks x 3 seeds
+# is 162 runs; jobscripts/sweep.sbatch spreads them over a job array.
+#   python guac/pipeline/sweep.py sweeps/recall_scaled.yaml --dry-run
+#   sbatch jobscripts/sweep.sbatch                                   # parameter-matched
+#   sbatch --export=ALL,BUDGET="--flop-match full_attention" jobscripts/sweep.sbatch
+#
+# One learning rate for every architecture is a confound: at small sizes
+# Mamba-2 wanted 3e-3 where attention was fine at 1e-3 (docs/ROADMAP.md).
+# Before reading a gap as architectural, rerun the losing architecture with a
+# per-task learning_rate override.
+name: recall-scaled
+
+base:
+  hidden_size: 256
+  num_attention_heads: 8
+  intermediate_size: 1024
+  sliding_window_size: 64
+  mamba_d_state: 64
+  mamba_headdim: 32
+  based_feature_dim: 16
+
+budget:
+  param_match: full_attention
+  seq_len: 512                  # used by --flop-match
+
+architectures:
+  attention: [full_attention, full_attention, full_attention, full_attention]
+  sliding_window: [sliding_window_attention, sliding_window_attention, sliding_window_attention, sliding_window_attention]
+  mixture_of_heads: [moh_attention, moh_attention, moh_attention, moh_attention]
+  conv: [conv, conv, conv, conv]
+  mamba2: [mamba2, mamba2, mamba2, mamba2]
+  conv_based: [conv, based, conv, based]
+  # The BASED paper's mix: short convolutions, BASED, and sliding-window attention
+  based_hybrid: [conv, based, sliding_window_attention, based]
+  mamba2_attention: [mamba2, mamba2, mamba2, full_attention]
+  mamba2_interleaved: [mamba2, full_attention, mamba2, full_attention]
+
+tasks:
+  # Zoology-style MQAR: a large vocabulary so recall can't be memorized
+  - task: mqar
+    args: {num_kv_pairs: 16, seq_len: 128, vocab_size: 8192}
+    steps: 10000
+  - task: mqar
+    args: {num_kv_pairs: 32, seq_len: 256, vocab_size: 8192}
+    steps: 10000
+  - task: mqar
+    args: {num_kv_pairs: 64, seq_len: 512, vocab_size: 8192}
+    steps: 10000
+  - task: induction
+    args: {seq_len: 256, vocab_size: 64}
+    steps: 5000
+  - task: selective_copy
+    args: {seq_len: 256, vocab_size: 16, num_tokens: 16}
+    steps: 10000
+  - task: passkey
+    args: {seq_len: 1024, vocab_size: 64}
+    steps: 5000
+    batch_size: 32
+
+seeds: [0, 1, 2]
+train:
+  batch_size: 128
+  learning_rate: 1e-3
+  warmup_steps: 500
+  eval_every: 1000
+  bf16: true

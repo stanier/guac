@@ -1,0 +1,50 @@
+# Language modeling on WikiText-103 with the architectures of
+# recall_scaled.yaml: validation perplexity at a matched budget. Needs network
+# access (or a cached copy) and the 60k SentencePiece tokenizer from
+# make train-tokenizer (jobscripts/full_pipeline.sbatch trains it too).
+#   sbatch --export=ALL,SPEC=sweeps/lm_scaled.yaml jobscripts/sweep.sbatch
+#
+# Training text is packed across document boundaries; set
+# reset_at_document_boundaries in base to keep each document's context to itself.
+name: lm-scaled
+
+base:
+  hidden_size: 256
+  num_attention_heads: 8
+  intermediate_size: 1024
+  sliding_window_size: 64
+  mamba_d_state: 64
+  mamba_headdim: 32
+  based_feature_dim: 16
+
+budget:
+  param_match: full_attention
+  seq_len: 512
+
+architectures:
+  attention: [full_attention, full_attention, full_attention, full_attention]
+  sliding_window: [sliding_window_attention, sliding_window_attention, sliding_window_attention, sliding_window_attention]
+  mixture_of_heads: [moh_attention, moh_attention, moh_attention, moh_attention]
+  conv: [conv, conv, conv, conv]
+  mamba2: [mamba2, mamba2, mamba2, mamba2]
+  conv_based: [conv, based, conv, based]
+  based_hybrid: [conv, based, sliding_window_attention, based]
+  mamba2_attention: [mamba2, mamba2, mamba2, full_attention]
+  mamba2_interleaved: [mamba2, full_attention, mamba2, full_attention]
+
+tasks:
+  - task: lm
+    name: wikitext-103 ppl
+    tokenizer: scratch/tokenizers/sentencepiece/shared_60k
+    datasets: [wikitext-103]
+    seq_len: 512
+    validation_docs: 500
+    steps: 20000
+
+seeds: [0, 1, 2]
+train:
+  batch_size: 64
+  learning_rate: 1e-3
+  warmup_steps: 1000
+  eval_every: 2000
+  bf16: true

@@ -85,8 +85,12 @@ def test_invalid_specs_are_rejected(tmp_path, bad, message):
         sweep.load_spec(write_spec(tmp_path, {**SPEC, **bad}))
 
 
-def test_example_spec_is_valid():
-    spec = sweep.load_spec(str(Path(__file__).parent.parent / "sweeps" / "recall_small.yaml"))
+@pytest.mark.parametrize("spec_file", sorted(p.name for p in (Path(__file__).parent.parent / "sweeps").glob("*.yaml")))
+def test_example_specs_are_valid(spec_file):
+    spec = sweep.load_spec(str(Path(__file__).parent.parent / "sweeps" / spec_file))
+    for task in spec['tasks']:
+        if task['task'] != 'lm':
+            sweep.TASKS[task['task']](2, **(task.get('args') or {}))
     for name in spec['architectures']:
         build_model_config(sweep.architecture_settings(spec, name), 128)
 
@@ -99,3 +103,36 @@ def test_scientific_notation_in_specs_is_read_as_numbers(tmp_path):
     spec = sweep.load_spec(str(path))
     assert spec['tasks'][0]['learning_rate'] == 0.003
     assert spec['train'] == {'weight_decay': 0.01, 'batch_size': 8}
+
+
+def test_shards_split_the_runs_and_share_one_table(tmp_path, monkeypatch):
+    spec_path = write_spec(tmp_path)
+    run_sweep(monkeypatch, spec_path, tmp_path / "out", '--shard', '0/3')
+    run_sweep(monkeypatch, spec_path, tmp_path / "out", '--shard', '2/3')
+    shard_rows = {name: [json.loads(line) for line in (tmp_path / "out" / name).read_text().splitlines()]
+                  for name in ('results.shard0-of-3.jsonl', 'results.shard2-of-3.jsonl')}
+    # Runs in order (attention, 0), (attention, 1), (conv, 0), (conv, 1): shard 0 gets the 1st and 4th
+    assert [(r['architecture'], r['seed']) for r in shard_rows['results.shard0-of-3.jsonl']] == \
+        [('attention', 0), ('conv', 1)]
+    assert [(r['architecture'], r['seed']) for r in shard_rows['results.shard2-of-3.jsonl']] == [('conv', 0)]
+    table = (tmp_path / "out" / "results.md").read_text()
+    assert "| attention |" in table and "| conv |" in table
+
+    run_sweep(monkeypatch, spec_path, tmp_path / "out", '--shard', '1/3')
+    (tmp_path / "out" / "results.md").unlink()
+    run_sweep(monkeypatch, spec_path, tmp_path / "out", '--summarize')
+    rows = [line for line in (tmp_path / "out" / "results.md").read_text().splitlines() if line.startswith("| ")]
+    assert len(rows) == 3 and all("±" in row for row in rows[1:])
+
+
+def test_force_with_shard_is_refused(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit):
+        run_sweep(monkeypatch, write_spec(tmp_path), tmp_path / "out", '--shard', '0/2', '--force')
+
+
+def test_budget_override_replaces_the_spec_budget():
+    class Args:
+        param_match, flop_match = None, 'conv'
+    spec = sweep.apply_budget_override(SPEC, Args)
+    assert spec['budget'] == {'flop_match': 'conv', 'seq_len': 16} and spec['name'] == 'tiny-flop'
+    assert sweep.architecture_settings(spec, 'attention')['flop_match'] == 'conv'
