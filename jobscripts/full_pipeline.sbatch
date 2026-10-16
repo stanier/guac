@@ -12,170 +12,105 @@
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=your.email@institution.edu
 
-set -e  # Exit on error
-set -u  # Exit on undefined variable
-set -o pipefail
+# Runs tokenizer training (if needed), pre-tokenization, pre-training,
+# mid-training and post-training in order. Override any setting below with
+# sbatch --export=ALL,PRETRAIN_CONFIG=guac-430m,... (see docs/SLURM.md).
+# Outputs go where the pipeline puts them by default (scratch/ via site_config.yml).
 
-# Tokenizer configuration
+set -euo pipefail
+
+# Tokenizer
 export VOCAB_SIZE=${VOCAB_SIZE:-60000}
 export TOKENIZER_TYPE=${TOKENIZER_TYPE:-sentencepiece}
 export TOKENIZER_DATASETS=${TOKENIZER_DATASETS:-fineweb}
 export MAX_LENGTH=${MAX_LENGTH:-1024}
 
-# Pre-training configuration
+# Pre-training (streaming datasets such as fineweb need a step budget)
 export PRETRAIN_CONFIG=${PRETRAIN_CONFIG:-guac-3b}
 export PRETRAIN_DATASETS=${PRETRAIN_DATASETS:-fineweb}
 export PRETRAIN_STEPS=${PRETRAIN_STEPS:-10000}
 
-# Mid-training configuration
+# Mid-training
 export MIDTRAIN_TASK=${MIDTRAIN_TASK:-arithmetic}
 export MIDTRAIN_LEARNING_RATE=${MIDTRAIN_LEARNING_RATE:-1e-5}
 export MIDTRAIN_SAMPLES=${MIDTRAIN_SAMPLES:-50000}
+export MIDTRAIN_DATASETS=${MIDTRAIN_DATASETS:-}   # required for MIDTRAIN_TASK=custom
 
-# Post-training configuration
+# Post-training (empty: the mode's default dataset, alpaca or ultrachat)
 export POSTTRAIN_MODE=${POSTTRAIN_MODE:-instruction}
-export POSTTRAIN_DATASETS=${POSTTRAIN_DATASETS:-}  # Empty = use synthetic data
+export POSTTRAIN_DATASETS=${POSTTRAIN_DATASETS:-}
 
-# General configuration
+# General
 export ENABLE_PROFILING=${ENABLE_PROFILING:-false}
 export FORCE_RETOKENIZE=${FORCE_RETOKENIZE:-false}
 export DEBUG_MODE=${DEBUG_MODE:-false}
+export TRAINING_VENV=${TRAINING_VENV:-$HOME/venvs/guac}   # created with: pip install -e ".[test]"
 
-export JOB_CUSTODIAN="$USER"
-export JOB_GROUP="your_lab_group"
+export TOKENIZERS_PARALLELISM=false
+export PYTHONUNBUFFERED=1
 
-export PROJECT_DIR="/work/$JOB_GROUP/$JOB_CUSTODIAN/"
-export SCRATCH_DIR="/scratch/$JOB_CUSTODIAN/"
-export LSCRATCH_DIR="/lscratch/$JOB_CUSTODIAN/"
+cd "$SLURM_SUBMIT_DIR"
 
-export VANILLA_LAUNCHER="python "
-export DISTRIBUTED_LAUNCHER="python -m torch.distributed.run \
-        --nproc_per_node $GPUS_PER_NODE \
-        --nnodes $SLURM_NNODES \
-        --rdzv_id $RDZV_ID \
-        --rdzv_backend $RDZV_BACKEND \
-        --rdzv_endpoint $head_node_ip:$RDZV_PORT \
-"
+# The venv supplies the pinned Python packages (transformers 4.46.3); load only
+# what it can't, such as CUDA. A Transformers module on PYTHONPATH would shadow
+# the venv's version.
+module load PyTorch/2.1.2-foss-2023a-CUDA-12.1.1
+source "$TRAINING_VENV/bin/activate"
 
-export LAUNCHER="$VANILLA_LAUNCHER"
+DEBUG_FLAGS=()
+if [ "$DEBUG_MODE" = "true" ]; then DEBUG_FLAGS+=(--debug); fi
+COMMON_FLAGS=("${DEBUG_FLAGS[@]}")
+if [ "$ENABLE_PROFILING" = "true" ]; then COMMON_FLAGS+=(--enable-profiling); fi
+RETOKENIZE_FLAGS=()
+if [ "$FORCE_RETOKENIZE" = "true" ]; then RETOKENIZE_FLAGS+=(--force-retokenize); fi
 
-cd $SLURM_SUBMIT_DIR
-
-module load \
-    Transformers/4.39.3-gfbf-2023a \
-    datasets/3.1.0-foss-2023a \
-    huggingface_hub/0.26.3-GCCcore-12.3.0 \
-    PyTorch/2.1.2-foss-2023a-CUDA-12.1.1 \
-    SentencePiece/0.2.0-GCC-12.3.0
-
-source $TRAINING_VENV/bin/activate
+TOKENIZER_DIR="scratch/tokenizers/${TOKENIZER_TYPE}/shared_$((VOCAB_SIZE / 1000))k"
+PRETRAIN_DIR="scratch/models/pretraining/${PRETRAIN_CONFIG}"
+MIDTRAIN_DIR="scratch/models/midtraining/${PRETRAIN_CONFIG}_${MIDTRAIN_TASK}"
+POSTTRAIN_DIR="scratch/models/posttraining/${PRETRAIN_CONFIG}_${MIDTRAIN_TASK}_${POSTTRAIN_MODE}"
 
 train_tokenizer() {
-    srun -J "tokenizer_training" --jobid $SLURM_JOB_ID bash -c """
-$LAUNCHER guac/pipeline/train_tokenizer.py \
-    --vocab-size $VOCAB_SIZE \
-    --tokenizer-type $TOKENIZER_TYPE \
-    --datasets $TOKENIZER_DATASETS \
-    --max-samples 50000
-rsync -r ${LSCRATCH_DIR}/${TOKENIZER_PATH} ${SCRATCH_DIR}/${TOKENIZER_PATH}
-"""
+    if [ -f "$TOKENIZER_DIR/tokenizer_config.json" ]; then
+        echo "Tokenizer exists at $TOKENIZER_DIR; skipping tokenizer training"
+        return
+    fi
+    srun -J tokenizer python guac/pipeline/train_tokenizer.py \
+        --vocab-size "$VOCAB_SIZE" --tokenizer-type "$TOKENIZER_TYPE" \
+        --datasets "$TOKENIZER_DATASETS" --max-samples 50000
 }
 
-RETOKENIZE_FLAG=""
-if [ "$FORCE_RETOKENIZE" = "true" ]; then RETOKENIZE_FLAG="--force-retokenize"; fi
-
-load_datasets() {
-
-}
-
-tokenize_dataset() {
-    srun -J "dataset_tokenization" --jobid $SLURM_JOB_ID bash -c """
-rsync -r $SCRATCH_TODO $LSCRATCH_TODO
-$LAUNCHER guac/pipeline/tokenize_datasets.py \
-    --tokenizer $LSCRATCH_DIR/$TOKENIZER_PATH \
-    --datasets $PRETRAIN_DATASETS \
-    --max-length $MAX_LENGTH \
-    --stage pretraining \
-    $RETOKENIZE_FLAG
-rsync -r $LSCRATCH_TODO $SCRATCH_TODO
-"""
+tokenize_datasets() {
+    # Fills the cache pretrain.py reads; streaming datasets are tokenized during training instead
+    srun -J tokenize python guac/pipeline/tokenize_datasets.py \
+        --tokenizer "$TOKENIZER_DIR" --datasets "$PRETRAIN_DATASETS" --max-length "$MAX_LENGTH" \
+        "${DEBUG_FLAGS[@]}" "${RETOKENIZE_FLAGS[@]}"
 }
 
 pretrain() {
-    PRETRAIN_ARGS=""
-    if [ "$ENABLE_PROFILING" = "true" ]; then PRETRAIN_ARGS="$PRETRAIN_ARGS --enable-profiling"; fi
-    if [ "$DEBUG_MODE" = "true" ]; then PRETRAIN_ARGS="$PRETRAIN_ARGS --debug"; fi
-
-    srun -J "pretraining" --jobid $SLURM_JOB_ID bash -c """
-rsync -r $SCRATCH_DIR/$TOKENIZER_NAME $LSCRATCH_DIR/$TOKENIZER_NAME
-$LAUNCHER guac/pipeline/pretrain.py \
-    --config $PRETRAIN_CONFIG \
-    --max-steps $PRETRAIN_STEPS \
-    $PRETRAIN_ARGS
-rsync -r $LSCRATCH_DIR/$CHECKPOINT_NAME $SCRATCH_DIR/$CHECKPOINT_NAME
-"""
+    srun -J pretrain python guac/pipeline/pretrain.py \
+        --model-config "$PRETRAIN_CONFIG" --datasets "$PRETRAIN_DATASETS" \
+        --max-steps "$PRETRAIN_STEPS" --max-length "$MAX_LENGTH" \
+        "${COMMON_FLAGS[@]}" "${RETOKENIZE_FLAGS[@]}"
 }
 
 midtrain() {
-    # Find the pretrained model directory
-    PRETRAIN_OUTPUT=$(ls -td scratch/models/pretrain_${PRETRAIN_CONFIG}_* | head -1)
-    if [ -z "$PRETRAIN_OUTPUT" ]; then echo "Could not find pretrained model output!"; exit 1; fi
-
-    MIDTRAIN_ARGS="--base-model $PRETRAIN_OUTPUT --task $MIDTRAIN_TASK --learning-rate $MIDTRAIN_LEARNING_RATE"
-    if [ "$MIDTRAIN_TASK" = "arithmetic" ]; then MIDTRAIN_ARGS="$MIDTRAIN_ARGS --num-arithmetic-samples $MIDTRAIN_SAMPLES"; fi
-    if [ "$FORCE_RETOKENIZE" = "true" ]; then MIDTRAIN_ARGS="$MIDTRAIN_ARGS --force-retokenize"; fi
-    if [ "$ENABLE_PROFILING" = "true" ]; then MIDTRAIN_ARGS="$MIDTRAIN_ARGS --enable-profiling"; fi
-    if [ "$DEBUG_MODE" = "true" ]; then MIDTRAIN_ARGS="$MIDTRAIN_ARGS --debug"; fi
-
-    srun -J "midtraining" --jobid $SLURM_JOB_ID bash -c """
-rsync -r $SCRATCH_DIR/$CHECKPOINT_NAME $LSCRATCH_DIR/$CHECKPOINT_NAME
-$LAUNCHER guac/pipeline/midtrain.py $MIDTRAIN_ARGS
-rsync -r $LSCRATCH_DIR/$CHECKPOINT_NAME $SCRATCH_DIR/$CHECKPOINT_NAME
-"""
+    local args=(--base-model "$PRETRAIN_DIR" --task "$MIDTRAIN_TASK" --learning-rate "$MIDTRAIN_LEARNING_RATE")
+    if [ "$MIDTRAIN_TASK" = "arithmetic" ]; then args+=(--num-arithmetic-samples "$MIDTRAIN_SAMPLES"); fi
+    if [ -n "$MIDTRAIN_DATASETS" ]; then args+=(--datasets $MIDTRAIN_DATASETS); fi
+    srun -J midtrain python guac/pipeline/midtrain.py "${args[@]}" "${COMMON_FLAGS[@]}" "${RETOKENIZE_FLAGS[@]}"
 }
 
 posttrain() {
-    # Find the midtrained model directory
-    BASE_MODEL_NAME=$(basename $PRETRAIN_OUTPUT)
-    MIDTRAIN_OUTPUT=$(ls -td scratch/models/midtrain_${BASE_MODEL_NAME}_${MIDTRAIN_TASK}_* | head -1)
-    if [ -z "$MIDTRAIN_OUTPUT" ]; then echo "Could not find midtrained model output"; exit 1; fi
-
-    POSTTRAIN_ARGS="--base-model $MIDTRAIN_OUTPUT --mode $POSTTRAIN_MODE"
-    if [ -n "$POSTTRAIN_DATASETS" ]; then POSTTRAIN_ARGS="$POSTTRAIN_ARGS --datasets $POSTTRAIN_DATASETS"; fi
-    if [ "$FORCE_RETOKENIZE" = "true" ]; then POSTTRAIN_ARGS="$POSTTRAIN_ARGS --force-retokenize"; fi
-    if [ "$ENABLE_PROFILING" = "true" ]; then POSTTRAIN_ARGS="$POSTTRAIN_ARGS --enable-profiling"; fi
-    if [ "$DEBUG_MODE" = "true" ]; then POSTTRAIN_ARGS="$POSTTRAIN_ARGS --debug"; fi
-
-    srun -J "posttraining" --jobid $SLURM_JOB_ID bash -c """
-rsync -r $SCRATCH_DIR/$CHECKPOINT_NAME $LSCRATCH_DIR/$CHECKPOINT_NAME
-$LAUNCHER guac/pipeline/posttrain.py $POSTTRAIN_ARGS
-rsync -r $LSCRATCH_DIR/$CHECKPOINT_NAME $SCRATCH_DIR/$CHECKPOINT_NAME
-"""
+    local args=(--base-model "$MIDTRAIN_DIR" --mode "$POSTTRAIN_MODE")
+    if [ -n "$POSTTRAIN_DATASETS" ]; then args+=(--datasets $POSTTRAIN_DATASETS); fi
+    srun -J posttrain python guac/pipeline/posttrain.py "${args[@]}" "${COMMON_FLAGS[@]}"
 }
 
-main() {
-    ## Environment variables
-    #export TOKENIZERS_PARALLELISM=false
-    #export PYTHONUNBUFFERED=1
-    #export CUDA_LAUNCH_BLOCKING=0
-    #
-    #TOKENIZER_PATH="tokenizers/${TOKENIZER_TYPE}/shared_${VOCAB_SIZE}"
-    #
-    #if [ -f "${SCRATCH_DIR}/${TOKENIZER_PATH}/tokenizer_config.json" ]; then
-    #    echo "Tokenizer already exists at ${SCRATCH_DIR}/${TOKENIZER_PATH}"
-    #    echo "Skipping tokenizer training..."
-    #else
-    #    train_tokenizer()
-    #fi
-    #
-    ## Find the final model directory
-    #MIDTRAIN_BASE=$(basename $MIDTRAIN_OUTPUT)
-    #FINAL_OUTPUT=$(ls -td scratch/models/posttrain_${MIDTRAIN_BASE}_${POSTTRAIN_MODE}_* | head -1)
-    #if [ -z "$FINAL_OUTPUT" ]; then echo "Could not find final model output"; exit 1; fi
+train_tokenizer
+tokenize_datasets
+pretrain
+midtrain
+posttrain
 
-
-}
-
-main
-
+echo "Pipeline complete: $POSTTRAIN_DIR"
 deactivate

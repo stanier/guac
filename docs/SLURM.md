@@ -17,15 +17,15 @@ You can customize the pipeline by setting environment variables when submitting:
 
 ```bash
 # Train a smaller model with custom vocab
-sbatch --export=PRETRAIN_CONFIG=guac-910m,VOCAB_SIZE=32000 \
+sbatch --export=ALL,PRETRAIN_CONFIG=guac-910m,VOCAB_SIZE=32000 \
     jobscripts/full_pipeline.sbatch
 
 # Use different tasks and modes
-sbatch --export=MIDTRAIN_TASK=code,POSTTRAIN_MODE=sft \
+sbatch --export=ALL,MIDTRAIN_TASK=code,POSTTRAIN_MODE=sft \
     jobscripts/full_pipeline.sbatch
 
 # Debug mode with profiling
-sbatch --export=DEBUG_MODE=true,ENABLE_PROFILING=true \
+sbatch --export=ALL,DEBUG_MODE=true,ENABLE_PROFILING=true \
     jobscripts/full_pipeline.sbatch
 ```
 
@@ -46,15 +46,20 @@ sbatch --export=DEBUG_MODE=true,ENABLE_PROFILING=true \
 - `MIDTRAIN_TASK`: Specialization task - arithmetic, code, reasoning, custom (default: arithmetic)
 - `MIDTRAIN_LEARNING_RATE`: Learning rate (default: 1e-5)
 - `MIDTRAIN_SAMPLES`: Number of arithmetic samples (default: 50000)
+- `MIDTRAIN_DATASETS`: Space-separated dataset paths or names; required for `custom`, optional for code and reasoning
 
 #### Post-training Settings
 - `POSTTRAIN_MODE`: instruction or sft (default: instruction)
-- `POSTTRAIN_DATASETS`: Space-separated dataset names (default: synthetic data)
+- `POSTTRAIN_DATASETS`: Space-separated dataset names (default: alpaca for instruction, ultrachat for sft)
 
 #### General Settings
 - `ENABLE_PROFILING`: Enable performance profiling (default: false)
 - `FORCE_RETOKENIZE`: Force dataset re-tokenization (default: false)
 - `DEBUG_MODE`: Use smaller datasets for testing (default: false)
+- `TRAINING_VENV`: Virtual environment with `pip install -e ".[test]"` (default: `$HOME/venvs/guac`)
+
+Pass variables with `--export=ALL,...`: a bare `--export=VAR=value` exports only the listed
+variables, dropping `PATH` and the rest of the submitting environment.
 
 ## SLURM Resource Configuration
 
@@ -87,7 +92,7 @@ The full pipeline runs these stages in sequence:
 1. **Tokenizer Training** (Stage 1)
    - Trains a SentencePiece or BPE tokenizer
    - Skips if tokenizer already exists
-   - Output: `scratch/tokenizers/{type}/shared_{vocab_size}/`
+   - Output: `scratch/tokenizers/{type}/shared_{vocab_size / 1000}k/`
 
 2. **Dataset Pre-tokenization** (Stage 2)
    - Pre-tokenizes and caches datasets
@@ -95,19 +100,19 @@ The full pipeline runs these stages in sequence:
    - Uses caching - only runs once per dataset/vocab combination
 
 3. **Pre-training** (Stage 3)
-   - Trains base language model
-   - Uses configuration from `configs/models/`
-   - Output: `scratch/models/pretrain_{config}_{timestamp}/`
+   - Trains base language model, with validation perplexity
+   - Uses the preset `PRETRAIN_CONFIG` from `model_configs.yaml`
+   - Output: `scratch/models/pretraining/{config}/`
 
 4. **Mid-training** (Stage 4)
    - Specializes model on specific tasks
    - Tasks: arithmetic, code, reasoning, custom
-   - Output: `scratch/models/midtrain_{base}_{task}_{timestamp}/`
+   - Output: `scratch/models/midtraining/{config}_{task}/`
 
 5. **Post-training** (Stage 5)
    - Instruction tuning or supervised fine-tuning
    - Modes: instruction, sft
-   - Output: `scratch/models/posttrain_{base}_{mode}_{timestamp}/`
+   - Output: `scratch/models/posttraining/{config}_{task}_{mode}/`
 
 ## Environment Setup
 
@@ -162,19 +167,19 @@ scancel <jobid>
 
 ### Quick Test Run (Debug Mode)
 ```bash
-sbatch --export=DEBUG_MODE=true,PRETRAIN_CONFIG=guac-430m,PRETRAIN_STEPS=100 \
+sbatch --export=ALL,DEBUG_MODE=true,PRETRAIN_CONFIG=guac-430m,PRETRAIN_STEPS=100 \
     jobscripts/full_pipeline.sbatch
 ```
 
 ### Code Specialization Pipeline
 ```bash
-sbatch --export=PRETRAIN_CONFIG=guac-4.5b,MIDTRAIN_TASK=code,POSTTRAIN_MODE=sft \
+sbatch --export=ALL,PRETRAIN_CONFIG=guac-4.5b,MIDTRAIN_TASK=code,POSTTRAIN_MODE=sft \
     jobscripts/full_pipeline.sbatch
 ```
 
 ### Reasoning Specialization with Large Vocab
 ```bash
-sbatch --export=VOCAB_SIZE=100000,PRETRAIN_CONFIG=guac-3b,MIDTRAIN_TASK=reasoning \
+sbatch --export=ALL,VOCAB_SIZE=100000,PRETRAIN_CONFIG=guac-3b,MIDTRAIN_TASK=reasoning \
     jobscripts/full_pipeline.sbatch
 ```
 
@@ -225,7 +230,7 @@ The scripts support checkpointing. To resume from a checkpoint, modify the train
 
 For custom datasets in mid-training:
 ```bash
-sbatch --export=MIDTRAIN_TASK=custom,MIDTRAIN_DATASETS="/path/to/dataset1 /path/to/dataset2" \
+sbatch --export=ALL,MIDTRAIN_TASK=custom,MIDTRAIN_DATASETS="/path/to/dataset1 /path/to/dataset2" \
     jobscripts/full_pipeline.sbatch
 ```
 
