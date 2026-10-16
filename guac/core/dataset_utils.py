@@ -103,6 +103,10 @@ def load_pretraining_splits(dataset_names: List[str], validation_docs: int = 100
         elif dataset_name == 'openwebtext':
             train, validation = split_validation(load_dataset('openwebtext')['train'], validation_docs, seed)
 
+        elif os.path.exists(dataset_name) and not is_saved_dataset(dataset_name):
+            # Data files, e.g. the .jsonl that scripts/hf_partial_download.py writes
+            train, validation = split_validation(load_data_files(dataset_name), validation_docs, seed)
+
         elif os.path.exists(dataset_name):
             dataset = load_from_disk(dataset_name)
             if isinstance(dataset, DatasetDict):
@@ -121,11 +125,41 @@ def load_pretraining_splits(dataset_names: List[str], validation_docs: int = 100
         if validation is not None:
             validations.append(validation)
 
+    if len(trains) > 1:
+        # Only the text matters downstream, and concatenation needs matching columns
+        # and, when any dataset streams, every dataset streaming
+        trains = [train.select_columns(['text']) for train in trains]
+        if any(is_streaming(train) for train in trains):
+            trains = [train if is_streaming(train) else train.to_iterable_dataset() for train in trains]
+        validations = [validation.select_columns(['text']) for validation in validations]
     train = trains[0] if len(trains) == 1 else concatenate_datasets(trains)
     validation = None
     if validations:
         validation = validations[0] if len(validations) == 1 else concatenate_datasets(validations)
     return train, validation
+
+
+DATA_FILE_FORMATS = {'.jsonl': 'json', '.json': 'json', '.parquet': 'parquet', '.csv': 'csv', '.txt': 'text'}
+
+
+def load_data_files(path: str) -> Dataset:
+    """
+    A data file, or a directory of data files of one format (.jsonl, .json, .parquet,
+    .csv, .txt), as a Dataset with a 'text' column.
+    """
+    if os.path.isdir(path):
+        files = sorted(os.path.join(path, name) for name in os.listdir(path)
+                       if os.path.splitext(name)[1] in DATA_FILE_FORMATS)
+    else:
+        files = [path]
+    formats = {DATA_FILE_FORMATS.get(os.path.splitext(name)[1]) for name in files}
+    if not files or None in formats or len(formats) > 1:
+        raise ValueError(f"{path} is neither a dataset saved with save_to_disk nor data files of one format "
+                         f"({', '.join(DATA_FILE_FORMATS)})")
+    dataset = load_dataset(formats.pop(), data_files=files, split='train')
+    if 'text' not in dataset.column_names:
+        raise ValueError(f"{path} has no 'text' column (columns: {', '.join(dataset.column_names)})")
+    return dataset
 
 
 def load_pretraining_datasets(dataset_names: List[str]) -> Any:
@@ -145,19 +179,25 @@ def get_pretraining_dataset_settings(dataset_names: List[str]) -> Dict[str, Any]
     return {name: hf_dataset_configs.get(name, name) for name in sorted(dataset_names)}
 
 
-def pack_documents(documents: List[List[int]], block_size: int, eos_token_id: Optional[int]) -> List[List[int]]:
+def pack_documents(documents: List[List[int]], block_size: int, eos_token_id: Optional[int],
+                   carry: Optional[List[int]] = None) -> List[List[int]]:
     """
     Concatenate token lists (each ending in eos_token_id, appended if missing)
-    and cut the stream into blocks of block_size tokens. The tokens after the
-    last full block are dropped. Documents run across block boundaries, so no
-    text is lost to truncation.
+    and cut the stream into blocks of block_size tokens. Documents run across
+    block boundaries, so no text is lost to truncation.
+
+    The tokens after the last full block are dropped, unless a carry list is
+    given: the stream then starts with its contents and the leftover tokens are
+    put back into it, so packing batch after batch loses only the final remainder.
     """
-    stream = []
+    stream = list(carry) if carry else []
     for ids in documents:
         stream.extend(ids)
         if eos_token_id is not None and (not ids or ids[-1] != eos_token_id):
             stream.append(eos_token_id)
     usable = len(stream) - len(stream) % block_size
+    if carry is not None:
+        carry[:] = stream[usable:]
     return [stream[i:i + block_size] for i in range(0, usable, block_size)]
 
 
@@ -197,11 +237,15 @@ def tokenize_dataset_with_cache(
         print(f"✅ Loaded {len(cached_dataset):,} cached samples")
         return cached_dataset
 
+    # map runs its batches in order in this process, so a document cut off at the
+    # end of one batch continues the next batch's first block
+    carry: List[int] = []
+
     def tokenize_function(examples):
         texts = [text for text in examples['text'] if text and text.strip()]
         if pack:
             ids = tokenizer(texts, truncation=False, padding=False, return_attention_mask=False)['input_ids'] if texts else []
-            return {'input_ids': pack_documents(ids, max_length, tokenizer.eos_token_id)}
+            return {'input_ids': pack_documents(ids, max_length, tokenizer.eos_token_id, carry)}
         if not texts:
             return {'input_ids': [], 'attention_mask': []}
         return tokenizer(texts, truncation=True, padding=False, max_length=max_length, return_tensors=None)

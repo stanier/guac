@@ -28,6 +28,7 @@ from datasets import load_dataset, load_from_disk, concatenate_datasets, Iterabl
 
 from guac.core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
 from guac.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes, flop_matched_ffn_hidden_sizes
+from guac.core.pipeline_utils import load_tokenizer as guac_load_tokenizer, resolve_scratch_path
 from guac.core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
 from guac.core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator, is_streaming
 from guac.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
@@ -38,7 +39,7 @@ def load_tokenizer(config: Dict[str, Any]) -> Any:
     from guac.core.path_manager import get_tokenizer_output_path
     default_tokenizer = str(get_tokenizer_output_path("sentencepiece", "shared_60k"))
 
-    tokenizer_path = config.get('tokenizer_model_path', default_tokenizer)
+    tokenizer_path = resolve_scratch_path(config.get('tokenizer_model_path', default_tokenizer))
 
     # Take the containing directory if a .model file path was given
     if tokenizer_path.endswith('.model'):
@@ -47,22 +48,19 @@ def load_tokenizer(config: Dict[str, Any]) -> Any:
     # The path manager creates tokenizer directories up front, so check for a
     # saved tokenizer rather than for the directory
     if not os.path.isfile(os.path.join(tokenizer_path, 'tokenizer_config.json')):
-        vocab_size = config.get('vocab_size', 60000)
         raise ValueError(
             f"Tokenizer not found at {tokenizer_path}\n"
             f"Please train a tokenizer first using:\n"
-            f"  python guac/pipeline/train_tokenizer.py --vocab-size {vocab_size}\n"
+            f"  python guac/pipeline/train_tokenizer.py --vocab-size 60000\n"
             f"Or use the Makefile:\n"
-            f"  make train-tokenizer VOCAB_SIZE={vocab_size}"
+            f"  make train-tokenizer VOCAB_SIZE=60000\n"
+            f"Or pass --tokenizer with the directory of one you have."
         )
 
     print(f"Loading tokenizer from {tokenizer_path}")
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
-        print(f"Loaded tokenizer with vocab size: {len(tokenizer):,}")
-        return tokenizer
-    except Exception as e:
-        raise ValueError(f"Failed to load tokenizer from {tokenizer_path}: {e}")
+    tokenizer = guac_load_tokenizer(tokenizer_path)
+    print(f"Loaded tokenizer with vocab size: {len(tokenizer):,}")
+    return tokenizer
 
 
 def print_parameter_breakdown(model: Any) -> None:
@@ -350,8 +348,9 @@ def main():
                        help='Comma-separated list of datasets')
     parser.add_argument('--force-retokenize', action='store_true',
                        help='Force re-tokenize dataset even if cached')
-    parser.add_argument('--vocab-size', type=int,
-                       help='Override vocab size from config')
+    parser.add_argument('--tokenizer', type=str, default=None,
+                       help="Tokenizer directory (default: the config's tokenizer_model_path); "
+                            "the vocab size is the tokenizer's")
     parser.add_argument('--output-dir', type=str,
                        help='Training output directory')
     parser.add_argument('--resume-from-checkpoint', type=str,
@@ -397,7 +396,8 @@ def main():
     print(f"Loading model config: {args.model_config}")
     config = load_model_config(args.model_config)
 
-    overrides = {'vocab_size': args.vocab_size, 'pdbs_train': args.batch_size, 'grad_accum_steps': args.grad_accum,
+    overrides = {'tokenizer_model_path': args.tokenizer, 'max_sequence_length': args.max_length,
+                 'pdbs_train': args.batch_size, 'grad_accum_steps': args.grad_accum,
                  'validation_docs': args.validation_docs, 'pack_sequences': args.pack,
                  'reset_at_document_boundaries': args.reset_at_document_boundaries,
                  'eval_steps': args.eval_steps, 'save_steps': args.save_steps, 'seed': args.seed,
@@ -411,7 +411,7 @@ def main():
 
     tokenizer = load_tokenizer(config)
 
-    max_length = args.max_length if args.max_length is not None else config.get('max_sequence_length', 1024)
+    max_length = config.get('max_sequence_length', 1024)
 
     train_dataset, eval_dataset = prepare_pretraining_data(
         dataset_names, tokenizer, max_length, pack=pack, validation_docs=validation_docs,
@@ -456,6 +456,7 @@ def main():
         eval_dataset=eval_dataset,
         data_collator=data_collator,
         callbacks=callbacks,
+        processing_class=tokenizer,  # saved into every checkpoint, so later stages can start from one
     )
 
     tokenizer.save_pretrained(output_dir)

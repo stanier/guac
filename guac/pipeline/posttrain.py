@@ -154,12 +154,18 @@ def create_posttraining_arguments(output_dir: str, mode: str, overrides: Dict[st
     defaults = {
         'instruction': dict(num_train_epochs=2, per_device_train_batch_size=4, gradient_accumulation_steps=8,
                             learning_rate=5e-6, weight_decay=0.0001, warmup_ratio=0.05, logging_steps=25,
-                            save_steps=200, eval_steps=100),
+                            eval_steps=100),
         'sft': dict(num_train_epochs=3, per_device_train_batch_size=2, gradient_accumulation_steps=16,
                     learning_rate=1e-5, weight_decay=0.001, warmup_ratio=0.1, logging_steps=50,
-                    save_steps=500, eval_steps=250),
+                    eval_steps=250),
     }[mode]
     defaults.update({key: value for key, value in overrides.items() if value is not None})
+    if overrides.get('save_steps') is None:
+        # Checkpoint at every evaluation: the best model is chosen among checkpoints only
+        defaults['save_steps'] = defaults['eval_steps']
+    if defaults['save_steps'] % defaults['eval_steps']:
+        raise ValueError(f"--save-steps ({defaults['save_steps']}) must be a multiple of "
+                         f"--eval-steps ({defaults['eval_steps']})")
     return make_training_arguments(
         output_dir,
         per_device_eval_batch_size=defaults['per_device_train_batch_size'],
@@ -196,7 +202,7 @@ def main():
     parser.add_argument('--grad-accum', type=int, help='Gradient accumulation steps')
     parser.add_argument('--learning-rate', type=float, help='Peak learning rate')
     parser.add_argument('--eval-steps', type=int, help='Evaluate every N steps')
-    parser.add_argument('--save-steps', type=int, help='Checkpoint every N steps (a multiple of --eval-steps)')
+    parser.add_argument('--save-steps', type=int, help='Checkpoint every N steps (default: --eval-steps; a multiple of it)')
     parser.add_argument('--seed', type=int, default=42, help='Seed for the eval split, data order and dropout')
     parser.add_argument('--report-to', type=str, default='none',
                         help='Also log to this tracker, e.g. wandb (metrics.jsonl is always written)')
@@ -243,6 +249,7 @@ def main():
         eval_dataset=split['test'],
         data_collator=data_collator,
         callbacks=callbacks,
+        processing_class=tokenizer,  # saved into every checkpoint, so later stages can start from one
     )
 
     write_run_info(output_dir, 'posttraining', vars(args), model=model, seed=args.seed,

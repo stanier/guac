@@ -48,6 +48,17 @@ def test_packing_keeps_every_document_token():
     assert len(stream) - len(blocks) * 8 < 8
 
 
+def test_packing_across_map_batches_drops_only_the_final_remainder(tmp_path):
+    tokenizer = make_tokenizer()
+    texts = [" ".join(f"w{(i + j) % 20}" for j in range(1 + i % 13)) for i in range(5000)]
+    total = sum(len(text.split()) + 1 for text in texts)
+    packed = tokenize_dataset_with_cache(Dataset.from_dict({'text': texts}), tokenizer, str(tmp_path / "cache"),
+                                         max_length=64, pack=True)
+    assert len(packed) == total // 64
+    stream = [token for text in texts for token in tokenizer(text)['input_ids'] + [2]]
+    assert sum(packed['input_ids'], []) == stream[:len(packed) * 64]
+
+
 def test_tokenize_with_packing_writes_full_blocks(tmp_path):
     tokenizer = make_tokenizer()
     texts = [" ".join(f"w{j % 20}" for j in range(n)) for n in [3, 30, 2, 12, 40]]
@@ -109,6 +120,38 @@ def test_on_disk_datasets_use_their_own_validation_split(tmp_path, monkeypatch):
     train, validation = load_pretraining_splits([str(plain), str(with_split)], validation_docs=4)
     assert len(train) == 26 + 3
     assert len(validation) == 4 + 1 and "v1" in validation['text']
+
+
+def test_data_files_load_as_datasets(tmp_path, monkeypatch):
+    """The .jsonl files scripts/hf_partial_download.py writes, alone or a directory of them."""
+    monkeypatch.setattr(dataset_utils, '_get_pretraining_dataset_configs', lambda: {})
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    for part in range(2):
+        (downloads / f"part{part}.jsonl").write_text(
+            "".join(json.dumps({'text': f"d{part}-{i}", 'id': i}) + "\n" for i in range(10)))
+    train, validation = load_pretraining_splits([str(downloads)], validation_docs=3)
+    assert len(train) == 17 and len(validation) == 3
+    train, _ = load_pretraining_splits([str(downloads / "part0.jsonl")], validation_docs=0)
+    assert train['text'][:2] == ["d0-0", "d0-1"]
+
+    (downloads / "part2.csv").write_text("text\nx\n")
+    with pytest.raises(ValueError, match="data files of one format"):
+        load_pretraining_splits([str(downloads)], validation_docs=0)
+
+
+def test_streaming_and_on_disk_datasets_mix(tmp_path, monkeypatch):
+    stream = IterableDataset.from_generator(lambda: ({'text': f"s{i}", 'url': "u"} for i in range(10)))
+    monkeypatch.setattr(dataset_utils, '_get_pretraining_dataset_configs', lambda: {'web': {}})
+    monkeypatch.setattr(dataset_utils, '_load_huggingface_pretraining_dataset',
+                        lambda config, validation_docs, seed: split_validation(stream, validation_docs, seed))
+    on_disk = tmp_path / "plain"
+    Dataset.from_dict({'text': [f"p{i}" for i in range(10)], 'n': list(range(10))}).save_to_disk(str(on_disk))
+
+    train, validation = load_pretraining_splits(['web', str(on_disk)], validation_docs=2)
+    texts = [row['text'] for row in train]
+    assert len(texts) == 16 and {"s5", "p0"} & set(texts)
+    assert len(validation) == 4 and validation.column_names == ['text']
 
 
 def test_unknown_dataset_is_an_error(monkeypatch):

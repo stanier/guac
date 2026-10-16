@@ -20,8 +20,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
-from transformers import AutoTokenizer
 
+from guac.core.pipeline_utils import load_tokenizer
 from guac.pipeline.pretrain import prepare_pretraining_data
 
 
@@ -47,7 +47,7 @@ def main():
 
     tokenizer_path = args.tokenizer[:-len('/tokenizer.model')] if args.tokenizer.endswith('tokenizer.model') else args.tokenizer
     print(f"Loading tokenizer from {tokenizer_path}")
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    tokenizer = load_tokenizer(tokenizer_path)
     print(f"Loaded tokenizer with vocab size: {len(tokenizer):,}")
 
     train, validation = prepare_pretraining_data(

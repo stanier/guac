@@ -26,7 +26,7 @@ sys.path.append(str(project_root))
 
 from transformers import (
     AutoTokenizer, AutoModel, Trainer, TrainingArguments,
-    DataCollatorForLanguageModeling, DataCollatorForSeq2Seq, EarlyStoppingCallback, TrainerCallback
+    DataCollatorForLanguageModeling, DataCollatorForSeq2Seq, TrainerCallback
 )
 from datasets import load_dataset, load_from_disk, concatenate_datasets
 
@@ -39,7 +39,7 @@ from guac.core.cache_utils import get_cache_directory, load_cached_dataset, save
 from guac.core.pipeline_utils import (
     load_base_model, create_standard_data_collator, get_output_directory,
     run_training_loop, apply_debug_mode, save_trained_model,
-    GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
+    GuacTrainer, MetricsLoggerCallback, ProgressEarlyStoppingCallback, make_training_arguments, write_run_info
 )
 
 
@@ -103,7 +103,7 @@ class ArithmeticAccuracyCallback(TrainerCallback):
 
     Adds eval_heldout_accuracy (and per-category values) to the eval metrics,
     so it can drive metric_for_best_model and early stopping. Must be placed
-    before EarlyStoppingCallback in the callback list.
+    before the early-stopping callback in the callback list.
     """
 
     def __init__(self, tokenizer, num_per_category: int, reverse_answers: bool):
@@ -174,7 +174,8 @@ def create_midtraining_arguments(output_dir: str, learning_rate: float = 1e-5, n
                                  best_metric: str = "eval_loss", seed: int = 42,
                                  report_to: str = "none") -> TrainingArguments:
     """Create training arguments optimized for mid-training."""
-    save_steps = save_steps or eval_steps * 2
+    # Checkpoint at every evaluation by default: the best model is chosen among checkpoints only
+    save_steps = save_steps or eval_steps
     if save_steps % eval_steps:
         raise ValueError(f"--save-steps ({save_steps}) must be a multiple of --eval-steps ({eval_steps})")
 
@@ -245,9 +246,11 @@ def main():
     parser.add_argument('--eval-steps', type=int, default=250,
                        help='Evaluate every N steps')
     parser.add_argument('--save-steps', type=int,
-                       help='Checkpoint every N steps (default: 2x --eval-steps; must be a multiple of it)')
+                       help='Checkpoint every N steps (default: --eval-steps; must be a multiple of it). '
+                            'The best model is picked among checkpoints')
     parser.add_argument('--early-stopping-patience', type=int, default=2,
-                       help='Evaluations without improvement before stopping (0 disables)')
+                       help='Evaluations in a row in which neither eval loss nor held-out accuracy '
+                            'improved before stopping (0 disables)')
     parser.add_argument('--seed', type=int, default=42,
                        help='Seed for data order and dropout')
     parser.add_argument('--report-to', type=str, default='none',
@@ -300,12 +303,13 @@ def main():
 
     callbacks = [CustomProgressCallback(tokenizer, sample_every=200)]
     if track_accuracy:
-        # Before EarlyStoppingCallback, which reads the metric this adds
+        # Before the early-stopping callback, which reads the metric this adds
         callbacks.append(ArithmeticAccuracyCallback(tokenizer, args.accuracy_eval_per_category,
                                                     args.reverse_answers))
     if args.early_stopping_patience > 0:
-        callbacks.append(EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience,
-                                               early_stopping_threshold=0.01))
+        watched = {'eval_loss': False, **({'eval_heldout_accuracy': True} if track_accuracy else {})}
+        callbacks.append(ProgressEarlyStoppingCallback(args.early_stopping_patience, threshold=0.01,
+                                                       metrics=watched))
 
     if args.enable_profiling:
         callbacks.append(ProfilingCallback(log_every_n_steps=25))
@@ -325,6 +329,7 @@ def main():
         eval_dataset=eval_dataset,
         data_collator=data_collator,
         callbacks=callbacks,
+        processing_class=tokenizer,  # saved into every checkpoint, so later stages can start from one
     )
 
     write_run_info(output_dir, 'midtraining', vars(args), model=model, seed=args.seed, base_model=args.base_model)

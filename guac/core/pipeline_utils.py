@@ -25,6 +25,34 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 project_root = Path(__file__).parent.parent.parent
 
 
+def resolve_scratch_path(path: str) -> str:
+    """
+    A path from a model config, with a leading "scratch/" mapped to site_config's
+    scratch_dir, where the tokenizer and model stages write.
+    """
+    parts = Path(path).parts
+    if parts[:1] == ('scratch',):
+        from .path_manager import get_scratch_dir
+        return str(get_scratch_dir().joinpath(*parts[1:]))
+    return path
+
+
+def load_tokenizer(path: str) -> Any:
+    """
+    AutoTokenizer.from_pretrained(path), refusing the SentencePiece tokenizers that
+    older versions saved as T5Tokenizer: AutoTokenizer converts those to a
+    T5TokenizerFast that turns newlines and unseen characters into UNK and appends
+    "</s>" instead of the EOS token.
+    """
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(path)
+    if type(tokenizer).__name__ == 'T5TokenizerFast':
+        raise ValueError(f"{path} holds a SentencePiece tokenizer saved by an older version, which loads "
+                         f"incorrectly (newlines become UNK, EOS is </s>). Rewrite it in place with:\n"
+                         f"  python -m guac.tokenizer.convert {path}")
+    return tokenizer
+
+
 def as_number(value: Any) -> Any:
     """
     value, with a string that spells a number converted to it. PyYAML follows
@@ -88,10 +116,9 @@ def load_base_model(model_path: str) -> tuple:
     print(f"Loading base model from {model_path}")
 
     try:
-        from transformers import AutoTokenizer
         from .custom_architectures import MixedLayerForCausalLM
 
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        tokenizer = load_tokenizer(model_path)
         model, loading_info = MixedLayerForCausalLM.from_pretrained(model_path, output_loading_info=True)
     except Exception as e:
         raise ValueError(f"Failed to load model from {model_path}: {e}")
@@ -180,7 +207,15 @@ def run_training_loop(trainer: Any, resume_checkpoint: Optional[str] = None) -> 
     """
     Run training, resuming from resume_checkpoint if given. Returns trainer.train()'s TrainOutput.
     """
-    return trainer.train(resume_from_checkpoint=resume_checkpoint)
+    if not resume_checkpoint:
+        return trainer.train()
+    # transformers 4.46 reloads the checkpoint's RNG state with a plain torch.load, which
+    # torch >= 2.6 restricts to weights; the state holds numpy's RNG state too
+    import numpy as np
+    multiarray = getattr(np, '_core', None) or np.core
+    rng_globals = [multiarray.multiarray._reconstruct, np.ndarray, np.dtype, type(np.dtype(np.uint32))]
+    with torch.serialization.safe_globals(rng_globals):
+        return trainer.train(resume_from_checkpoint=resume_checkpoint)
 
 
 def apply_debug_mode(dataset: Any, max_samples: int = 1000) -> Any:
@@ -233,6 +268,37 @@ class GuacTrainer(Trainer):
                 # Capped so a diverged run logs a large number rather than overflowing
                 logs[key.replace('loss', 'perplexity')] = math.exp(min(logs[key], 50.0))
         super().log(logs, *args, **kwargs)
+
+
+class ProgressEarlyStoppingCallback(TrainerCallback):
+    """
+    Stop after `patience` evaluations in a row in which none of `metrics` improved by
+    more than `threshold`. metrics maps a metric name to whether greater is better.
+
+    transformers' EarlyStoppingCallback watches metric_for_best_model alone, so a
+    model whose held-out accuracy is still 0 while its eval loss falls gets stopped,
+    and it compares against the best metric as of the last checkpoint only.
+    """
+
+    def __init__(self, patience: int, threshold: float = 0.0, metrics: Optional[Dict[str, bool]] = None):
+        self.patience, self.threshold = patience, threshold
+        self.metrics = metrics or {'eval_loss': False}
+        self.best: Dict[str, float] = {}
+        self.stale = 0
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        improved = False
+        for name, greater_is_better in self.metrics.items():
+            value = (metrics or {}).get(name)
+            if value is None:
+                continue
+            best = self.best.get(name)
+            if best is None or (value - best if greater_is_better else best - value) > self.threshold:
+                self.best[name] = value
+                improved = True
+        self.stale = 0 if improved else self.stale + 1
+        if self.stale >= self.patience:
+            control.should_training_stop = True
 
 
 class MetricsLoggerCallback(TrainerCallback):
