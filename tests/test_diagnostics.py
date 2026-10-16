@@ -13,9 +13,11 @@ sys.path.append(str(Path(__file__).parent.parent))
 import pytest
 import torch
 
-from guac.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
+from guac.core.custom_architectures import (
+    MixedLayerConfig, MixedLayerForCausalLM, no_weight_decay_parameter_names,
+)
 from guac.core.diagnostics import (
-    IGNORE, TASKS, answer_accuracy, make_batch, run_diagnostic, run_language_modeling,
+    IGNORE, TASKS, answer_accuracy, make_batch, parameter_groups, run_diagnostic, run_language_modeling,
 )
 from guac.pipeline.run_diagnostics import diagnostic_model_config, parse_assignments
 
@@ -102,6 +104,21 @@ def test_run_diagnostic_trains_and_reports():
     assert set(results['eval']) == {'loss', 'token_accuracy', 'example_accuracy'}
     assert results['parameters'] == model.num_parameters()
     assert results['best_example_accuracy'] >= results['eval']['example_accuracy']
+
+
+def test_weight_decay_skips_biases_norms_and_mamba2_dynamics():
+    """weight_decay used to apply to every parameter, norm gains and Mamba-2's A_log, D and dt_bias included."""
+    config = MixedLayerConfig(vocab_size=32, hidden_size=32, num_attention_heads=4, num_hidden_layers=2,
+                              layer_types=["mamba2", "full_attention"], intermediate_size=64, mamba_d_state=8,
+                              mamba_headdim=16)
+    model = MixedLayerForCausalLM(config)
+    decayed, not_decayed = parameter_groups(model, 0.1)
+    assert decayed['weight_decay'] == 0.1 and not_decayed['weight_decay'] == 0.0
+    names = {id(param): name for name, param in model.named_parameters()}
+    assert sorted(names[id(p)] for p in decayed['params'] + not_decayed['params']) == sorted(names.values())
+    assert {names[id(p)] for p in not_decayed['params']} == no_weight_decay_parameter_names(model)
+    assert {"layers.0.mixer.A_log", "layers.0.mixer.D", "layers.0.mixer.dt_bias",
+            "final_layer_norm.weight"} <= {names[id(p)] for p in not_decayed['params']}
 
 
 def test_language_modeling_loop_reports_validation_perplexity():

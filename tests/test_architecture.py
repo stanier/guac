@@ -2,8 +2,8 @@
 Correctness tests for MixedLayerForCausalLM and its layer types.
 
 Covers weight tying across save/load, attention-mask handling, convolution
-initialization and config
-validation. Causality is covered separately in test_causality.py.
+initialization, weight-decay groups and config validation. Causality is
+covered separately in test_causality.py.
 """
 
 import math
@@ -17,6 +17,7 @@ import torch
 
 from guac.core.custom_architectures import (
     SUPPORTED_LAYER_TYPES, MixedLayerConfig, MixedLayerForCausalLM, MixedTransformerLayer,
+    no_weight_decay_parameter_names,
 )
 from guac.core.pipeline_utils import load_base_model
 
@@ -192,3 +193,33 @@ def test_conv_mixer_init_counts_fan_out_per_group(groups):
     fan_out = 64 // groups * 3
     assert conv.weight.std().item() == pytest.approx(math.sqrt(2 / fan_out), rel=0.2)
     assert (conv.bias == 0).all()
+
+
+def test_no_weight_decay_covers_biases_norms_and_mamba2_dynamics():
+    model = MixedLayerForCausalLM(make_config(list(SUPPORTED_LAYER_TYPES), use_rms_norm=False,
+                                              use_absolute_position_embeddings=True))
+    exempt = no_weight_decay_parameter_names(model)
+    names = dict(model.named_parameters())
+    assert exempt <= set(names)
+
+    mamba = model.config.layer_types.index("mamba2")
+    for suffix in ("A_log", "D", "dt_bias", "conv1d.bias", "norm.weight"):  # norm: Mamba-2's gated RMSNorm
+        assert f"layers.{mamba}.mixer.{suffix}" in exempt
+    moh = model.config.layer_types.index("moh_attention")
+    assert f"layers.{moh}.mixer.head_router.0.bias" in exempt
+    assert {"final_layer_norm.weight", "final_layer_norm.bias", "layers.0.mixer_norm.weight"} <= exempt
+
+    decayed = set(names) - exempt
+    assert {"token_embeddings.weight", "position_embeddings.weight", f"layers.{mamba}.mixer.conv1d.weight",
+            f"layers.{mamba}.mixer.in_proj.weight", "layers.0.mixer.q_proj.weight"} <= decayed
+    # Exactly the biases, the norm gains and Mamba-2's per-head parameters; every matrix is decayed
+    assert all(name.endswith(("bias", "norm.weight", "A_log", ".D")) for name in exempt)
+    assert all(names[name].dim() >= 2 for name in decayed)
+
+
+def test_no_weight_decay_with_rms_norm_and_tied_embeddings():
+    model = MixedLayerForCausalLM(make_config(["full_attention", "conv"], tie_word_embeddings=True))
+    exempt = no_weight_decay_parameter_names(model)
+    assert exempt == {"layers.0.mixer_norm.weight", "layers.0.ffn_norm.weight", "layers.1.mixer_norm.weight",
+                      "layers.1.ffn_norm.weight", "final_layer_norm.weight", "layers.1.mixer.conv1d.bias"}
+    assert "token_embeddings.weight" in dict(model.named_parameters())  # decayed, and also the lm_head

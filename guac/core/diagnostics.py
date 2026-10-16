@@ -29,9 +29,11 @@ accuracy on a fixed held-out set.
 
 import math
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import torch
+
+from .custom_architectures import no_weight_decay_parameter_names
 
 PAD = 0
 IGNORE = -100
@@ -204,14 +206,28 @@ def evaluate(model, data: Dict[str, torch.Tensor], batch_size: int = 256) -> Dic
             'example_accuracy': totals['example_accuracy'] / num_examples}
 
 
+def parameter_groups(model, weight_decay: float) -> List[Dict[str, Any]]:
+    """
+    AdamW parameter groups: weight_decay for the weights, none for biases, norm
+    gains and Mamba-2's A_log, D and dt_bias (see no_weight_decay_parameter_names).
+    """
+    exempt = no_weight_decay_parameter_names(model)
+    decayed, not_decayed = [], []
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            (not_decayed if name in exempt else decayed).append(param)
+    return [{'params': decayed, 'weight_decay': weight_decay}, {'params': not_decayed, 'weight_decay': 0.0}]
+
+
 def train_and_evaluate(model, next_batch: Callable[[int], Dict[str, torch.Tensor]],
                        evaluate_fn: Callable[[Any], Dict[str, float]], steps: int, learning_rate: float = 1e-3,
                        weight_decay: float = 0.1, warmup_steps: int = 100, eval_every: int = 0,
                        device: Optional[str] = None, bf16: bool = False,
                        log: Callable[[str], None] = print) -> Dict[str, Any]:
     """
-    The training loop shared by the diagnostics and sweeps: AdamW, linear
-    warmup then cosine decay, gradient clipping at 1.0. next_batch(step)
+    The training loop shared by the diagnostics and sweeps: AdamW (weight
+    decay as in parameter_groups), linear warmup then cosine decay, gradient
+    clipping at 1.0. next_batch(step)
     returns input_ids and labels; evaluate_fn(model) returns metrics, run
     every eval_every steps (if set) and at the end. bf16 runs forward passes
     under bfloat16 autocast (weights and optimizer state stay float32).
@@ -221,8 +237,7 @@ def train_and_evaluate(model, next_batch: Callable[[int], Dict[str, torch.Tensor
     """
     device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device).train()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay,
-                                  betas=(0.9, 0.98))
+    optimizer = torch.optim.AdamW(parameter_groups(model, weight_decay), lr=learning_rate, betas=(0.9, 0.98))
 
     def lr_scale(step):
         if step < warmup_steps:

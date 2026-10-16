@@ -250,6 +250,10 @@ class Mamba2Mixer(nn.Module):
     gated by silu(z), normalized, and projected back to hidden_size.
     """
 
+    # Trained without weight decay, which would pull the decay rates, time steps
+    # and skip connection toward 0 (mamba_ssm marks the same three parameters)
+    no_weight_decay_parameters = ("A_log", "D", "dt_bias")
+
     def __init__(self, hidden_size: int, d_state: int = 128, d_conv: int = 4, expand: int = 2,
                  headdim: int = 64, ngroups: int = 1, chunk_size: int = 64,
                  dt_min: float = 0.001, dt_max: float = 0.1, dt_init_floor: float = 1e-4,

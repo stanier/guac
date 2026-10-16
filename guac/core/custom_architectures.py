@@ -14,10 +14,10 @@ import torch.nn.functional as F
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast, MoeCausalLMOutputWithPast
 from transformers.generation.utils import GenerationMixin
-from typing import Optional, Tuple, Union, List, Dict, Any
+from typing import Optional, Set, Tuple, Union, List, Dict, Any
 
 from .linear_attention import causal_linear_attention, taylor_feature_map
-from .mamba2 import Mamba2Mixer, autocast_disabled, causal_conv1d
+from .mamba2 import GatedRMSNorm, Mamba2Mixer, autocast_disabled, causal_conv1d
 
 
 SUPPORTED_LAYER_TYPES = (
@@ -275,6 +275,35 @@ def get_norm_layer(config, hidden_size=None):
         return RMSNorm(hidden_size, eps=config.layer_norm_eps)
     else:
         return nn.LayerNorm(hidden_size, eps=config.layer_norm_eps)
+
+
+# Every normalization module the model uses: block and final norms, and Mamba-2's gated norm
+NORM_TYPES = (RMSNorm, nn.LayerNorm, GatedRMSNorm)
+
+
+def no_weight_decay_parameter_names(model: nn.Module) -> Set[str]:
+    """
+    Names of the parameters to train without weight decay, as model.named_parameters() gives them:
+
+    - every bias (nn.Linear, nn.Conv1d and nn.LayerNorm biases)
+    - the weights of every norm in NORM_TYPES (per-channel gains)
+    - what a module lists in its no_weight_decay_parameters: Mamba-2's A_log,
+      D and dt_bias, as in mamba_ssm
+
+    Everything else is decayed, the token and position embeddings included, as
+    in Hugging Face Trainer's default grouping. With tied embeddings the lm_head
+    is the token embedding matrix, so it stays decayed too; a parameter shared
+    by several modules is listed once, under its first name. BASED and the
+    attention mixers have no per-channel parameters besides biases. Works on
+    any module, a single mixer included.
+    """
+    exempt = set()
+    for module in model.modules():
+        listed = set(getattr(module, "no_weight_decay_parameters", ()))
+        for name, param in module.named_parameters(recurse=False):
+            if name == "bias" or name in listed or isinstance(module, NORM_TYPES):
+                exempt.add(id(param))
+    return {name for name, param in model.named_parameters() if id(param) in exempt}
 
 
 class MixedLayerConfig(PretrainedConfig):
