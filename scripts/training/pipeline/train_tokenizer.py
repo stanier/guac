@@ -50,12 +50,8 @@ def get_special_tokens() -> tuple[Dict[str, str], List[str]]:
 
 
 def load_datasets_for_tokenizer(dataset_names: List[str]) -> Any:
-    """Load datasets for tokenizer training."""
-    try:
-        return load_pretraining_datasets(dataset_names)
-    except:
-        print("Failed to load datasets, using fallback")
-        return None
+    """Load the training split of each dataset for tokenizer training."""
+    return load_pretraining_datasets(dataset_names)
 
 
 def get_output_path(output_dir: Optional[str], vocab_size: int, tokenizer_type: str) -> str:
@@ -79,43 +75,16 @@ def create_training_text_file(datasets: Any, all_special_tokens: List[str],
     with open(temp_file, 'w', encoding='utf-8') as f:
         text_count = 0
 
-        if datasets is not None:
-            if hasattr(datasets, '__iter__'):
-                for item in datasets:
-                    if text_count >= max_samples:
-                        break
-                    text = item.get('text', '').strip()
-                    if text:
-                        f.write(text + '\n')
-                        text_count += 1
-            elif hasattr(datasets, 'select'):
-                subset = datasets.select(range(min(max_samples, len(datasets))))
-                for item in subset:
-                    text = item.get('text', '').strip()
-                    if text:
-                        f.write(text + '\n')
-                        text_count += 1
-            else:
-                for item in datasets:
-                    if text_count >= max_samples:
-                        break
-                    text = str(item).strip() if item else ""
-                    if text:
-                        f.write(text + '\n')
-                        text_count += 1
-
-        if text_count < 100:
-            print("Warning: Very few samples loaded, using fallback data")
-            basic_texts = [
-                "Hello world", "This is a test", "Machine learning is fun",
-                "The quick brown fox jumps over the lazy dog",
-                "Python is a programming language", "Deep learning with neural networks",
-                "Natural language processing", "Transformers are powerful models"
-            ] * 100
-
-            for text in basic_texts:
+        for item in datasets:
+            if text_count >= max_samples:
+                break
+            text = (item.get('text') or '').strip()
+            if text:
                 f.write(text + '\n')
                 text_count += 1
+
+        if text_count < 100:
+            raise ValueError(f"Only {text_count} non-empty texts loaded; a tokenizer needs real training text")
 
         for token in all_special_tokens[:10]:
             f.write(f"Example with {token} in text.\n")
@@ -127,47 +96,42 @@ def create_training_text_file(datasets: Any, all_special_tokens: List[str],
 
 def train_sentencepiece_tokenizer(training_file: str, output_path: str,
                                   vocab_size: int, all_special_tokens: List[str],
-                                  core_tokens: Dict[str, str]) -> Optional[Any]:
+                                  core_tokens: Dict[str, str]) -> Any:
     """Train SentencePiece tokenizer."""
-    try:
-        import sentencepiece as spm
-        from transformers import T5Tokenizer
+    import sentencepiece as spm
+    from transformers import T5Tokenizer
 
-        print(f"Training SentencePiece tokenizer (vocab_size={vocab_size})")
+    print(f"Training SentencePiece tokenizer (vocab_size={vocab_size})")
 
-        model_prefix = os.path.join(output_path, "tokenizer")
-        os.makedirs(output_path, exist_ok=True)
+    model_prefix = os.path.join(output_path, "tokenizer")
+    os.makedirs(output_path, exist_ok=True)
 
-        spm.SentencePieceTrainer.train(
-            input=training_file,
-            model_prefix=model_prefix,
-            vocab_size=vocab_size,
-            model_type='bpe',
-            character_coverage=0.9995,
-            split_digits=True,
-            byte_fallback=True,
-            normalization_rule_name='nfkc',
-            add_dummy_prefix=True,
-            remove_extra_whitespaces=False,
-            max_sentence_length=32768,
-            user_defined_symbols=all_special_tokens,
-            minloglevel=1,
-            pad_id=0, bos_id=1, eos_id=2, unk_id=3
-        )
+    spm.SentencePieceTrainer.train(
+        input=training_file,
+        model_prefix=model_prefix,
+        vocab_size=vocab_size,
+        model_type='bpe',
+        character_coverage=0.9995,
+        split_digits=True,
+        byte_fallback=True,
+        normalization_rule_name='nfkc',
+        add_dummy_prefix=True,
+        remove_extra_whitespaces=False,
+        max_sentence_length=32768,
+        user_defined_symbols=all_special_tokens,
+        minloglevel=1,
+        pad_id=0, bos_id=1, eos_id=2, unk_id=3
+    )
 
-        tokenizer = T5Tokenizer(vocab_file=f"{model_prefix}.model", extra_ids=0)
-        tokenizer.pad_token = core_tokens['pad_token']
-        tokenizer.bos_token = core_tokens['bos_token']
-        tokenizer.eos_token = core_tokens['eos_token']
-        tokenizer.unk_token = core_tokens['unk_token']
+    tokenizer = T5Tokenizer(vocab_file=f"{model_prefix}.model", extra_ids=0)
+    tokenizer.pad_token = core_tokens['pad_token']
+    tokenizer.bos_token = core_tokens['bos_token']
+    tokenizer.eos_token = core_tokens['eos_token']
+    tokenizer.unk_token = core_tokens['unk_token']
 
-        tokenizer.save_pretrained(output_path)
-        print(f"SentencePiece tokenizer saved to {output_path}")
-        return tokenizer
-
-    except Exception as e:
-        print(f"SentencePiece training failed: {e}")
-        return None
+    tokenizer.save_pretrained(output_path)
+    print(f"SentencePiece tokenizer saved to {output_path}")
+    return tokenizer
 
 
 def train_bpe_tokenizer(training_file: str, output_path: str,
@@ -247,9 +211,6 @@ def main():
                 all_special_tokens, core_tokens
             )
 
-            if tokenizer is None:
-                print("Falling back to BPE tokenizer")
-                tokenizer = train_bpe_tokenizer(training_file, output_path, args.vocab_size, core_tokens)
 
         print(f"\nTokenizer training complete!")
         print(f"Vocabulary size: {len(tokenizer):,}")

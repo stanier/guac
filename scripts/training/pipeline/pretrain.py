@@ -29,14 +29,14 @@ from datasets import load_dataset, load_from_disk, concatenate_datasets, Iterabl
 try:
     from scripts.training.core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
     from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes, flop_matched_ffn_hidden_sizes
-    from scripts.training.core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, write_run_info
+    from scripts.training.core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
     from scripts.training.core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
     from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
 except ImportError:
     try:
         from ..core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
         from ..core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes, flop_matched_ffn_hidden_sizes
-        from ..core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, write_run_info
+        from ..core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
         from ..core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
         from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
     except ImportError:
@@ -44,7 +44,7 @@ except ImportError:
         sys.path.insert(0, parent_dir)
         from core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
         from core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes, flop_matched_ffn_hidden_sizes
-        from core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, write_run_info
+        from core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
         from core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
         from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
 
@@ -85,274 +85,64 @@ def load_tokenizer(config: Dict[str, Any]) -> Any:
         raise ValueError(f"Failed to load tokenizer from {tokenizer_path}: {e}")
 
 
-def print_parameter_breakdown(model: Any, config: Dict[str, Any]) -> None:
-    """Print detailed parameter breakdown by component and layer type."""
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+def print_parameter_breakdown(model: Any) -> None:
+    """Print parameter counts by component and by layer type."""
+    total = model.num_parameters()
+    print(f"\nParameter Breakdown:\n{'=' * 60}\nTotal parameters: {total:,}\n{'=' * 60}")
 
-    print(f"\nParameter Breakdown:")
-    print(f"{'='*60}")
-    print(f"Total parameters: {total_params:,}")
-    print(f"Trainable parameters: {trainable_params:,}")
-    print(f"{'='*60}")
+    def count(module):
+        return sum(p.numel() for p in module.parameters()) if module is not None else 0
 
-    component_params = {}
+    tied = model.lm_head.weight is model.token_embeddings.weight
+    components = {
+        'Token embeddings': count(model.token_embeddings),
+        'Position embeddings': count(model.position_embeddings),
+        'LM head' + (' (tied to embeddings)' if tied else ''): 0 if tied else count(model.lm_head),
+        'Final norm': count(model.final_layer_norm),
+        'Layers': sum(count(layer) for layer in model.layers),
+    }
+    print("\nComponent Breakdown:")
+    for name, params in components.items():
+        if params or name.startswith('LM head'):
+            print(f"  {name:<30}: {params:>14,} ({params / total:6.1%})")
 
-    if hasattr(model, 'token_embeddings'):
-        embedding_params = sum(p.numel() for p in model.token_embeddings.parameters())
-        if hasattr(model, 'position_embeddings'):
-            embedding_params += sum(p.numel() for p in model.position_embeddings.parameters())
-        component_params['Embeddings'] = embedding_params
-
-    if hasattr(model, 'lm_head'):
-        component_params['LM Head'] = sum(p.numel() for p in model.lm_head.parameters())
-
-    if hasattr(model, 'final_layer_norm'):
-        component_params['Final Layer Norm'] = sum(p.numel() for p in model.final_layer_norm.parameters())
-
-    layer_type_params = {}
-    layers_total_params = 0
-
-    if hasattr(model, 'layers'):
-        layer_types = None
-        if hasattr(model, 'config') and hasattr(model.config, 'layer_types'):
-            layer_types = model.config.layer_types
-        elif isinstance(config, dict) and 'layer_types' in config:
-            layer_types = config['layer_types']
-        elif hasattr(config, 'layer_types'):
-            layer_types = config.layer_types
-
-        for i, layer in enumerate(model.layers):
-            if layer_types and i < len(layer_types):
-                layer_type = layer_types[i]
-            else:
-                layer_class = layer.__class__.__name__.lower()
-                if 'attention' in layer_class or 'moh' in layer_class:
-                    layer_type = 'attention'
-                elif 'conv' in layer_class:
-                    layer_type = 'conv'
-                elif 'mamba' in layer_class:
-                    layer_type = 'mamba'
-                elif 'based' in layer_class:
-                    layer_type = 'based'
-                elif 'moe' in layer_class:
-                    layer_type = 'moe'
-                else:
-                    layer_type = f'layer_{i}'
-
-            layer_params = sum(p.numel() for p in layer.parameters())
-            layers_total_params += layer_params
-
-            if layer_type not in layer_type_params:
-                layer_type_params[layer_type] = {'count': 0, 'params': 0}
-            layer_type_params[layer_type]['count'] += 1
-            layer_type_params[layer_type]['params'] += layer_params
-
-        component_params['All Layers'] = layers_total_params
-
-    print(f"\nComponent Breakdown:")
-    for component, params in component_params.items():
-        percentage = (params / total_params) * 100
-        print(f"  {component:<20}: {params:>12,} ({percentage:5.1f}%)")
-
-    if layer_type_params:
-        print(f"\nLayer Type Breakdown:")
-        for layer_type, info in sorted(layer_type_params.items()):
-            count = info['count']
-            params = info['params']
-            avg_params = params // count if count > 0 else 0
-            percentage = (params / total_params) * 100
-            print(f"  {layer_type:<15} (x{count:2d}): {params:>12,} ({percentage:5.1f}%) - avg {avg_params:,}/layer")
-
-    accounted_params = sum(component_params.values())
-    remaining = total_params - accounted_params
-    if remaining > 0:
-        percentage = (remaining / total_params) * 100
-        print(f"  {'Other':<20}: {remaining:>12,} ({percentage:5.1f}%)")
-
-    print(f"{'='*60}\n")
+    by_type = {}
+    for layer in model.layers:
+        key = f"{layer.layer_type} + {layer.ffn_type}"
+        layers, params = by_type.get(key, (0, 0))
+        by_type[key] = (layers + 1, params + count(layer))
+    print("\nLayer Type Breakdown (mixer + FFN):")
+    for key, (layers, params) in sorted(by_type.items()):
+        print(f"  {key:<30} (x{layers:2d}): {params:>14,} ({params / total:6.1%}) - {params // layers:,}/layer")
+    print(f"{'=' * 60}\n")
 
 
 class MemoryUsageCallback(TrainerCallback):
-    """Callback to print memory usage breakdown after first training step."""
+    """
+    After the first optimizer step, print where GPU memory went: parameters
+    and optimizer state measured from the tensors themselves, gradients (the
+    size of the trainable parameters, freed after each step), and the rest of
+    the peak (activations, temporary buffers and allocator overhead).
+    """
 
-    def __init__(self, config=None, tokenized_dataset=None):
-        self.step_completed = False
-        self.config = config
-        self.tokenized_dataset = tokenized_dataset
-
-    def on_step_end(self, args, state, control, **kwargs):
-        if not self.step_completed and state.global_step == 1:
-            self.step_completed = True
-            model = kwargs.get('model')
-            if model is not None:
-                self._print_memory_breakdown(model, args)
-
-    def _print_memory_breakdown(self, model, args):
-        if not torch.cuda.is_available():
+    def on_step_end(self, args, state, control, model=None, optimizer=None, **kwargs):
+        if state.global_step != 1 or model is None or not torch.cuda.is_available():
             return
 
-        try:
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            initial_memory = torch.cuda.memory_allocated()
-            max_memory = torch.cuda.max_memory_allocated()
-        except RuntimeError:
-            return
+        def gigabytes(tensors):
+            return sum(t.numel() * t.element_size() for t in tensors) / 1024**3
 
-        print(f"\nMemory Usage Breakdown (after first training step):")
-        print(f"{'='*70}")
-        print(f"Current GPU memory: {initial_memory / 1024**3:.2f} GB")
-        print(f"Peak GPU memory: {max_memory / 1024**3:.2f} GB")
-        print(f"{'='*70}")
-
-        component_memory = {}
-
-        try:
-            if hasattr(model, 'token_embeddings'):
-                component_memory['Token Embeddings'] = self._measure_component_memory(model.token_embeddings)
-            if hasattr(model, 'position_embeddings'):
-                component_memory['Position Embeddings'] = self._measure_component_memory(model.position_embeddings)
-            if hasattr(model, 'lm_head'):
-                component_memory['LM Head'] = self._measure_component_memory(model.lm_head)
-            if hasattr(model, 'final_layer_norm'):
-                component_memory['Final Layer Norm'] = self._measure_component_memory(model.final_layer_norm)
-
-            if hasattr(model, 'layers') and len(model.layers) > 0:
-                layer_memories = []
-                for i, layer in enumerate(model.layers[:min(3, len(model.layers))]):
-                    layer_mem = self._measure_component_memory(layer)
-                    layer_memories.append(layer_mem)
-                    if i < 3:
-                        component_memory[f'Layer {i}'] = layer_mem
-
-                if layer_memories:
-                    avg_layer_mem = sum(layer_memories) / len(layer_memories)
-                    component_memory['All Layers (est)'] = avg_layer_mem * len(model.layers)
-
-            print(f"\nComponent Memory Usage:")
-            total_component_mem = 0
-            for component, mem_bytes in component_memory.items():
-                mem_gb = mem_bytes / 1024**3
-                total_component_mem += mem_bytes
-                if mem_gb >= 0.1:
-                    print(f"  {component:<25}: {mem_gb:6.2f} GB")
-                else:
-                    print(f"  {component:<25}: {mem_bytes / 1024**2:6.1f} MB")
-
-            print(f"\nMemory Summary:")
-            print(f"  Measured components: {total_component_mem / 1024**3:.2f} GB")
-            print(f"  Current allocation:  {initial_memory / 1024**3:.2f} GB")
-            print(f"  Unaccounted:         {max(0, initial_memory - total_component_mem) / 1024**3:.2f} GB")
-
-        except Exception as e:
-            print(f"Error measuring memory: {e}")
-
-        dataset_memory = self._print_dataset_memory(args)
-        self._print_memory_summary(initial_memory, max_memory, total_component_mem, dataset_memory, args)
-        print(f"{'='*70}\n")
-
-    def _print_dataset_memory(self, args):
-        try:
-            print(f"\nDataset Memory Usage:")
-            batch_size = getattr(args, 'per_device_train_batch_size', 8)
-            grad_accum = getattr(args, 'gradient_accumulation_steps', 4)
-            num_devices = max(1, torch.cuda.device_count()) if torch.cuda.is_available() else 1
-            effective_batch = batch_size * grad_accum * num_devices
-
-            max_length = 512
-            if self.config:
-                max_length = self.config.get('max_sequence_length', 512)
-            elif hasattr(args, 'max_length'):
-                max_length = args.max_length
-
-            print(f"  Batch size per device:  {batch_size}")
-            print(f"  Gradient accumulation:  {grad_accum}")
-            print(f"  Effective batch size:   {effective_batch}")
-            print(f"  Sequence length:        {max_length}")
-
-            bytes_per_token = 4
-            tokens_per_batch = effective_batch * max_length
-            batch_memory = tokens_per_batch * bytes_per_token * 3
-
-            workers = getattr(args, 'dataloader_num_workers', 2)
-            if workers > 0:
-                dataloader_memory = batch_memory * workers * 2
-            else:
-                dataloader_memory = batch_memory
-
-            total_data_memory = dataloader_memory + batch_memory
-
-            if self.tokenized_dataset:
-                dataset_size = len(self.tokenized_dataset)
-                print(f"  Total samples:          {dataset_size:,}")
-                print(f"  Batches per epoch:      {dataset_size // effective_batch:,}")
-
-            if total_data_memory > 1024**3:
-                print(f"  Total data memory:      {total_data_memory / 1024**3:.2f} GB")
-            else:
-                print(f"  Total data memory:      {total_data_memory / 1024**2:.1f} MB")
-
-            return {
-                'batch_memory': batch_memory,
-                'dataloader_memory': dataloader_memory,
-                'total_data_memory': total_data_memory,
-                'effective_batch_size': effective_batch,
-                'sequence_length': max_length
-            }
-
-        except Exception:
-            return {
-                'batch_memory': 0, 'dataloader_memory': 0,
-                'total_data_memory': 0, 'effective_batch_size': 0,
-                'sequence_length': 0
-            }
-
-    def _print_memory_summary(self, current_gpu, peak_gpu, model_memory, dataset_info, args):
-        try:
-            print(f"\nComprehensive Memory Summary:")
-            print(f"{'-'*50}")
-
-            current_gb = current_gpu / 1024**3
-            peak_gb = peak_gpu / 1024**3
-            model_gb = model_memory / 1024**3
-            dataset_gb = dataset_info.get('total_data_memory', 0) / 1024**3
-
-            total_est = model_gb * 4 + dataset_gb
-
-            if total_est > current_gb * 1.2:
-                scale = (current_gb * 0.8) / total_est
-                model_gb *= scale
-                optimizer_gb = model_gb * 1.5
-                gradient_gb = model_gb * 0.8
-            else:
-                optimizer_gb = model_gb * 1.5
-                gradient_gb = model_gb * 0.8
-
-            overhead_gb = min(model_gb * 0.3, current_gb * 0.15)
-            accounted = model_gb + optimizer_gb + gradient_gb + dataset_gb + overhead_gb
-            framework_gb = max(0, current_gb - accounted)
-
-            print(f"Memory Breakdown:")
-            print(f"  Model Parameters:    {model_gb:6.2f} GB ({model_gb/current_gb*100:5.1f}%)")
-            print(f"  Optimizer States:    {optimizer_gb:6.2f} GB ({optimizer_gb/current_gb*100:5.1f}%)")
-            print(f"  Gradients:           {gradient_gb:6.2f} GB ({gradient_gb/current_gb*100:5.1f}%)")
-            print(f"  Dataset/Batches:     {dataset_gb:6.2f} GB ({dataset_gb/current_gb*100:5.1f}%)")
-            print(f"  Training Overhead:   {overhead_gb:6.2f} GB ({overhead_gb/current_gb*100:5.1f}%)")
-            print(f"  Framework/Other:     {framework_gb:6.2f} GB ({framework_gb/current_gb*100:5.1f}%)")
-            print(f"  {'-'*30}")
-            print(f"  Total GPU Memory:    {current_gb:6.2f} GB")
-            print(f"  Peak GPU Memory:     {peak_gb:6.2f} GB")
-
-        except Exception:
-            pass
-
-    def _measure_component_memory(self, component):
-        try:
-            param_count = sum(p.numel() for p in component.parameters())
-            return param_count * 12
-        except Exception:
-            return 0
+        parameters = gigabytes(model.parameters())
+        gradients = gigabytes(p for p in model.parameters() if p.requires_grad)
+        optimizer_state = gigabytes(value for param_state in (optimizer.state.values() if optimizer else [])
+                                    for value in param_state.values() if torch.is_tensor(value))
+        peak = torch.cuda.max_memory_allocated() / 1024**3
+        print(f"\nGPU memory after the first step (device {torch.cuda.current_device()}):")
+        print(f"  Parameters:        {parameters:7.2f} GB")
+        print(f"  Gradients:         {gradients:7.2f} GB (at peak; freed after each step)")
+        print(f"  Optimizer state:   {optimizer_state:7.2f} GB")
+        print(f"  Activations, etc.: {max(0.0, peak - parameters - gradients - optimizer_state):7.2f} GB")
+        print(f"  Peak allocated:    {peak:7.2f} GB  (currently {torch.cuda.memory_allocated() / 1024**3:.2f} GB)")
 
 
 def pretraining_cache_key(dataset_names: List[str], tokenizer: Any, max_length: int,
@@ -471,7 +261,7 @@ def create_model(config: Dict[str, Any], tokenizer: Any, print_params: bool = Fa
     print(f"Created model with {model.num_parameters():,} parameters")
 
     if print_params:
-        print_parameter_breakdown(model, config)
+        print_parameter_breakdown(model)
 
     if torch.cuda.is_available():
         model = model.cuda()
@@ -489,9 +279,10 @@ def create_training_arguments(config: Dict[str, Any], output_dir: str, max_steps
     max_steps <= 0 trains for config['num_train_epochs'] instead. With evaluate,
     the validation set is scored every config['eval_steps'] steps.
     """
-    report_to = config.get('report_to', 'none')
-    return TrainingArguments(
-        output_dir=output_dir,
+    return make_training_arguments(
+        output_dir,
+        fp16=config.get('fp16', True),
+        report_to=config.get('report_to', 'none'),
         num_train_epochs=config.get('num_train_epochs', 1),
         max_steps=max_steps,
         per_device_train_batch_size=config.get('pdbs_train', 16),
@@ -505,15 +296,10 @@ def create_training_arguments(config: Dict[str, Any], output_dir: str, max_steps
         logging_steps=config.get('step_val', 100),
         save_steps=config.get('save_steps', 1000),
         eval_steps=config.get('eval_steps', 500),
-        save_total_limit=3,
-        fp16=config.get('fp16', True),
         gradient_checkpointing=True,
-        # Dropping the last partial batch would also drop a validation set smaller than one batch
-        dataloader_drop_last=False,
         dataloader_num_workers=0,
         dataloader_pin_memory=False,
         eval_strategy="steps" if evaluate else "no",
-        report_to=[] if report_to in (None, 'none') else report_to,
         seed=config.get('seed', 42),
     )
 
@@ -548,7 +334,7 @@ def create_callbacks(config: Dict[str, Any], tokenizer: Any, enable_profiling: b
     callbacks = [CustomProgressCallback(tokenizer, config.get('sample_every', 200))]
 
     if enable_memory_profiling:
-        callbacks.append(MemoryUsageCallback(config=config, tokenized_dataset=tokenized_dataset))
+        callbacks.append(MemoryUsageCallback())
 
     if enable_profiling:
         callbacks.append(ProfilingCallback(

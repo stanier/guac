@@ -144,21 +144,9 @@ class VocabPipeline:
     # -------------------------------------------------------------------------
 
     def _get_core_tokens(self) -> dict:
-        """Resolve core special tokens from prompt_templates or use defaults."""
-        try:
-            try:
-                from scripts.training.core.prompt_templates import create_prompt_tokenizer
-            except ImportError:
-                from ..core.prompt_templates import create_prompt_tokenizer
-            pt = create_prompt_tokenizer()
-            return pt.get_core_tokens()
-        except Exception:
-            return {
-                'pad_token': '<pad>',
-                'unk_token': '<unk>',
-                'bos_token': '<s>',
-                'eos_token': '</s>',
-            }
+        """The core special tokens (pad, unk, bos, eos) defined in prompt_templates."""
+        from ..core.prompt_templates import create_prompt_tokenizer
+        return create_prompt_tokenizer().get_core_tokens()
 
 
 # ---------------------------------------------------------------------------

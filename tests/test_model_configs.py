@@ -70,3 +70,31 @@ def test_preset_numbers_in_scientific_notation_are_numbers():
     """PyYAML reads 8e-4 as a string; presets must still give floats."""
     config = load_model_config('guac-3b')
     assert isinstance(config['learning_rate'], float)
+
+
+def test_training_arguments_share_stage_conventions(tmp_path):
+    from scripts.training.core.pipeline_utils import make_training_arguments
+    import torch
+
+    args = make_training_arguments(str(tmp_path), fp16=True, report_to='none', per_device_train_batch_size=2)
+    assert args.fp16 == torch.cuda.is_available()  # Trainer refuses fp16 without CUDA
+    assert args.report_to == []
+    assert args.dataloader_drop_last is False      # keeps evaluation sets smaller than a batch
+    assert make_training_arguments(str(tmp_path), save_total_limit=1).save_total_limit == 1
+
+
+def test_midtraining_text_tasks_load_and_tokenize_datasets_from_disk(tmp_path):
+    from datasets import Dataset
+    from tokenizers import Tokenizer, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+    from scripts.training.pipeline.midtrain import prepare_task_dataset
+
+    backend = Tokenizer(models.WordLevel({"[UNK]": 0, "a": 1, "b": 2}, unk_token="[UNK]"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object=backend, unk_token="[UNK]")
+    Dataset.from_dict({'text': ["a b a", "", "b b"]}).save_to_disk(str(tmp_path / "texts"))
+
+    tokenized = prepare_task_dataset('custom', tokenizer, [str(tmp_path / "texts")])
+    assert tokenized['input_ids'] == [[1, 2, 1], [2, 2]]
+    with pytest.raises(ValueError, match="needs --datasets"):
+        prepare_task_dataset('custom', tokenizer)

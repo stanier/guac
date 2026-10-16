@@ -40,7 +40,7 @@ try:
     from scripts.training.core.pipeline_utils import (
         load_base_model, create_standard_data_collator, get_output_directory,
         run_training_loop, apply_debug_mode, save_trained_model,
-        GuacTrainer, MetricsLoggerCallback, write_run_info
+        GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
     )
 except ImportError:
     try:
@@ -53,7 +53,7 @@ except ImportError:
         from ..core.pipeline_utils import (
             load_base_model, create_standard_data_collator, get_output_directory,
             run_training_loop, apply_debug_mode, save_trained_model,
-            GuacTrainer, MetricsLoggerCallback, write_run_info
+            GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
         )
     except ImportError:
         parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -67,7 +67,7 @@ except ImportError:
         from core.pipeline_utils import (
             load_base_model, create_standard_data_collator, get_output_directory,
             run_training_loop, apply_debug_mode, save_trained_model,
-            GuacTrainer, MetricsLoggerCallback, write_run_info
+            GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
         )
 
 
@@ -152,159 +152,47 @@ class ArithmeticAccuracyCallback(TrainerCallback):
         print(f"\n[step {state.global_step}] held-out accuracy {result['overall']:.1%}  ({per_cat})")
 
 
-def create_code_dataset(tokenizer: Any) -> Any:
-    """Create code dataset for mid-training."""
-    print("Loading code datasets...")
-
-    try:
-        datasets = []
-
-        try:
-            python_data = load_dataset("codeparrot/github-code", languages=["Python"])
-            datasets.append(python_data['train'].select(range(min(10000, len(python_data['train'])))))
-        except:
-            print("Could not load Python code dataset")
-
-        if not datasets:
-            code_examples = [
-                "def factorial(n):\n    if n <= 1:\n        return 1\n    return n * factorial(n-1)",
-                "def fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)",
-                "class Calculator:\n    def add(self, a, b):\n        return a + b\n    def multiply(self, a, b):\n        return a * b",
-                "import math\n\ndef is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(math.sqrt(n)) + 1):\n        if n % i == 0:\n            return False\n    return True"
-            ]
-
-            expanded_examples = []
-            for _ in range(1000):
-                expanded_examples.append(random.choice(code_examples))
-
-            tokenized = tokenizer(
-                expanded_examples,
-                truncation=True,
-                padding=False,
-                max_length=512,
-                return_tensors=None
-            )
-
-            return {
-                'input_ids': tokenized['input_ids'],
-                'attention_mask': tokenized['attention_mask'],
-                'text': expanded_examples
-            }
-
-        combined = concatenate_datasets(datasets)
-
-        def tokenize_code(examples):
-            texts = [example for example in examples['code'] if example and len(example.strip()) > 50]
-            if not texts:
-                return {'input_ids': [], 'attention_mask': []}
-
-            tokenized = tokenizer(
-                texts,
-                truncation=True,
-                padding=False,
-                max_length=512,
-                return_tensors=None
-            )
-            return tokenized
-
-        return combined.map(tokenize_code, batched=True, remove_columns=combined.column_names)
-
-    except Exception as e:
-        print(f"Error loading code dataset: {e}")
-        return None
+# Default data for the text tasks: Hugging Face (name, config, split) and how a record becomes training text
+TEXT_TASKS = {
+    'code': (('codeparrot/codeparrot-clean-valid', None, 'train'), lambda record: record['content']),
+    'reasoning': (('openai/gsm8k', 'main', 'train'),
+                  lambda record: f"Question: {record['question']}\nAnswer: {record['answer']}"),
+}
 
 
-def create_reasoning_dataset(tokenizer: Any, force_retokenize: bool = False) -> Any:
-    """Create reasoning dataset for mid-training with caching support."""
-    from datasets import Dataset
-
-    cache_key = f"reasoning_{tokenizer_cache_tag(tokenizer)}_samples5000"
-    cache_dir = get_cache_directory("midtraining", cache_key)
-
-    cached = load_cached_dataset(cache_dir, force_retokenize)
-    if cached is not None:
-        return cached
-
-    print("Creating reasoning dataset...")
-
-    reasoning_examples = [
-        "If all cats are animals and Fluffy is a cat, then Fluffy is an animal.",
-        "The number of apples in the basket decreased by 3. If there were originally 10 apples, how many are left? Answer: 7",
-        "If it takes 2 hours to walk 6 miles, how long does it take to walk 1 mile? Answer: 20 minutes",
-        "A train leaves at 2 PM and arrives at 5 PM. How long was the journey? Answer: 3 hours",
-        "If A > B and B > C, then A > C. This is an example of transitivity.",
-    ]
-
-    expanded = []
-    for _ in range(5000):
-        expanded.append(random.choice(reasoning_examples))
-
-    tokenized = tokenizer(
-        expanded,
-        truncation=True,
-        padding=False,
-        max_length=512,
-        return_tensors=None
-    )
-
-    dataset_dict = {
-        'input_ids': tokenized['input_ids'],
-        'attention_mask': tokenized['attention_mask'],
-        'text': expanded
-    }
-    dataset = Dataset.from_dict(dataset_dict)
-
-    save_dataset_to_cache(dataset, cache_dir)
-    return dataset
+def load_text_dataset(name: str) -> Any:
+    """A dataset saved on disk, or a Hugging Face dataset's train split."""
+    if os.path.exists(name):
+        dataset = load_from_disk(name)
+        return dataset['train'] if hasattr(dataset, 'keys') else dataset
+    return load_dataset(name, split='train')
 
 
 def prepare_task_dataset(task: str, tokenizer: Any, custom_datasets: Optional[List[str]] = None,
-                        num_arithmetic_samples: int = 50000, force_retokenize: bool = False) -> Any:
-    """Prepare dataset based on task type."""
-    if task == 'arithmetic':
-        return create_arithmetic_dataset(tokenizer, num_arithmetic_samples, force_retokenize)
+                         max_length: int = 512) -> Any:
+    """
+    Tokenized training text for the code, reasoning and custom tasks.
 
-    elif task == 'code':
-        return create_code_dataset(tokenizer)
-
-    elif task == 'reasoning':
-        return create_reasoning_dataset(tokenizer, force_retokenize)
-
-    elif task == 'custom' and custom_datasets:
-        datasets = []
-        for dataset_path in custom_datasets:
-            try:
-                if os.path.exists(dataset_path):
-                    dataset = load_from_disk(dataset_path)
-                    datasets.append(dataset)
-                else:
-                    dataset = load_dataset(dataset_path)
-                    datasets.append(dataset['train'])
-            except Exception as e:
-                print(f"Could not load dataset {dataset_path}: {e}")
-
-        if not datasets:
-            raise ValueError("No valid custom datasets loaded!")
-
-        combined = concatenate_datasets(datasets)
-
-        def tokenize_function(examples):
-            texts = [text for text in examples['text'] if text and text.strip()]
-            if not texts:
-                return {'input_ids': [], 'attention_mask': []}
-
-            return tokenizer(
-                texts,
-                truncation=True,
-                padding=False,
-                max_length=512,
-                return_tensors=None
-            )
-
-        return combined.map(tokenize_function, batched=True, remove_columns=combined.column_names)
-
+    code and reasoning load their default dataset (TEXT_TASKS) unless
+    --datasets names others; custom needs --datasets. Datasets given by name
+    or path must have a 'text' (or, for code, 'content') column.
+    """
+    if task == 'custom' and not custom_datasets:
+        raise ValueError("--task custom needs --datasets")
+    if custom_datasets:
+        datasets = [load_text_dataset(name) for name in custom_datasets]
+        to_text = lambda record: record.get('text', record.get('content'))
     else:
-        raise ValueError(f"Unknown task: {task}. Available: arithmetic, code, reasoning, custom")
+        (name, config_name, split), to_text = TEXT_TASKS[task]
+        datasets = [load_dataset(name, config_name, split=split)]
+    combined = datasets[0] if len(datasets) == 1 else concatenate_datasets(datasets)
+
+    def tokenize(examples):
+        records = [dict(zip(examples, values)) for values in zip(*examples.values())]
+        texts = [text for text in map(to_text, records) if text and text.strip()]
+        return tokenizer(texts, truncation=True, padding=False, max_length=max_length)
+
+    return combined.map(tokenize, batched=True, remove_columns=combined.column_names, desc="Tokenizing")
 
 
 def create_midtraining_arguments(output_dir: str, learning_rate: float = 1e-5, num_train_epochs: float = 3,
@@ -318,8 +206,9 @@ def create_midtraining_arguments(output_dir: str, learning_rate: float = 1e-5, n
     if save_steps % eval_steps:
         raise ValueError(f"--save-steps ({save_steps}) must be a multiple of --eval-steps ({eval_steps})")
 
-    return TrainingArguments(
-        output_dir=output_dir,
+    return make_training_arguments(
+        output_dir,
+        report_to=report_to,
         num_train_epochs=num_train_epochs,
         max_steps=max_steps,
         per_device_train_batch_size=batch_size,
@@ -333,14 +222,11 @@ def create_midtraining_arguments(output_dir: str, learning_rate: float = 1e-5, n
         save_steps=save_steps,
         eval_steps=eval_steps,
         save_total_limit=2,
-        fp16=torch.cuda.is_available(),
-        dataloader_drop_last=True,
         dataloader_num_workers=2,
         eval_strategy="steps",
         load_best_model_at_end=True,
         metric_for_best_model=best_metric,
         greater_is_better=best_metric != "eval_loss",
-        report_to=[] if report_to == "none" else report_to,
         seed=seed,
     )
 
@@ -354,7 +240,8 @@ def main():
                        choices=['arithmetic', 'code', 'reasoning', 'custom'],
                        help='Specialization task')
     parser.add_argument('--datasets', type=str, nargs='+',
-                       help='Custom dataset paths (required for --task custom)')
+                       help='Datasets (paths or Hugging Face names) with a text column: required for '
+                            '--task custom; replaces the default data for code and reasoning')
     parser.add_argument('--num-arithmetic-samples', type=int, default=50000,
                        help='Number of arithmetic samples to generate')
     parser.add_argument('--output-dir', type=str,
@@ -406,8 +293,6 @@ def main():
 
     args = parser.parse_args()
 
-    if args.task == 'custom' and not args.datasets:
-        raise ValueError("--datasets required when --task is 'custom'")
 
     model, tokenizer = load_base_model(args.base_model)
 
@@ -421,9 +306,8 @@ def main():
         eval_dataset = create_arithmetic_dataset(tokenizer, args.num_eval_samples, held_out=True, seed=43,
                                                  **arithmetic_kwargs)
     else:
-        dataset = prepare_task_dataset(args.task, tokenizer, args.datasets,
-                                     args.num_arithmetic_samples, args.force_retokenize)
-        split_dataset = dataset.train_test_split(test_size=0.1, seed=42)
+        dataset = prepare_task_dataset(args.task, tokenizer, args.datasets)
+        split_dataset = dataset.train_test_split(test_size=0.1, seed=args.seed)
         train_dataset, eval_dataset = split_dataset['train'], split_dataset['test']
 
     if args.debug:

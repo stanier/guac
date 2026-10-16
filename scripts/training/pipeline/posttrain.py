@@ -37,7 +37,7 @@ from scripts.training.core.arithmetic import CATEGORIES, generate_problems
 from scripts.training.core.callbacks import CustomProgressCallback, ProfilingCallback
 from scripts.training.core.pipeline_utils import (
     load_base_model, get_output_directory, run_training_loop, apply_debug_mode, save_trained_model,
-    GuacTrainer, MetricsLoggerCallback, write_run_info,
+    GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info,
 )
 
 INSTRUCTION_TEMPLATE = "### Instruction:\n{instruction}\n\n### Response:\n"
@@ -157,17 +157,14 @@ def create_posttraining_arguments(output_dir: str, mode: str, overrides: Dict[st
                     save_steps=500, eval_steps=250),
     }[mode]
     defaults.update({key: value for key, value in overrides.items() if value is not None})
-    report_to = defaults.pop('report_to', 'none')
-    return TrainingArguments(
-        output_dir=output_dir,
+    return make_training_arguments(
+        output_dir,
         per_device_eval_batch_size=defaults['per_device_train_batch_size'],
         lr_scheduler_type='cosine',
         save_total_limit=2,
-        fp16=torch.cuda.is_available(),
         eval_strategy="steps",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
-        report_to=[] if report_to == 'none' else report_to,
         **defaults,
     )
 

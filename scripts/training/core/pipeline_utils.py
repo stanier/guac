@@ -109,6 +109,28 @@ def load_base_model(model_path: str) -> tuple:
     return model, tokenizer
 
 
+def make_training_arguments(output_dir: str, fp16: bool = True, report_to: Any = 'none',
+                            **kwargs: Any) -> TrainingArguments:
+    """
+    TrainingArguments with the conventions every stage shares; each stage
+    passes its own schedule and batch settings as keyword arguments.
+
+    - fp16 only where CUDA is available (Trainer refuses it elsewhere)
+    - report_to 'none' (or None) means no trackers; metrics.jsonl is written regardless
+    - the last partial batch is kept: dropping it also drops any evaluation
+      set smaller than one batch
+    - at most three checkpoints are kept
+    """
+    kwargs.setdefault('dataloader_drop_last', False)
+    kwargs.setdefault('save_total_limit', 3)
+    return TrainingArguments(
+        output_dir=output_dir,
+        fp16=bool(fp16) and torch.cuda.is_available(),
+        report_to=[] if report_to in (None, 'none') else report_to,
+        **kwargs,
+    )
+
+
 def create_standard_data_collator(training_args: TrainingArguments, tokenizer: Any) -> Any:
     """
     Create standard data collator for language modeling.
