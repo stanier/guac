@@ -4,18 +4,19 @@ The working plan for Guac, kept current as items land. It comes from a full
 codebase review in October 2026. Each finding below was reproduced with a
 probe script or on real checkpoints, not just read off the code.
 
-**Status (2026-10-16):** Phase 0 and the Mamba-2 part of Phase 1 are done. Next
-is the unified block structure (1.1), which waits on one decision; see
-[Open decision](#open-decision).
+**Status (2026-10-16):** Phase 0, the Mamba-2 rewrite and the unified block
+structure (1.1) are done. Next are the BASED rewrite (1.2), the MoH and MoE
+fixes (1.3) and position encoding (1.4), which are independent of each other.
 
 ## Where Things Stand
 
 | Branch | Commits on top of `main` | Purpose |
 |--------|--------------------------|---------|
 | `phase-0-correctness` | `3219380`, `761c30f` | Pre-review pending work, then the Phase 0 fixes |
-| `phase-1-mamba2` | the above + `446bd60` + this doc | Mamba-2 rewrite; **continue from here** |
+| `phase-1-mamba2` | the above + `446bd60` + `8fdeb01` (this doc) | Mamba-2 rewrite |
+| `claude/vibrant-darwin-vs3o5o` | the above + `4fd35cb` + this update | Unified block structure; **continue from here** |
 
-Neither branch is merged into `main`. Each Phase 1 item should land as its own
+None of these branches is merged into `main`. Each Phase 1 item should land as its own
 commit (or stacked branch) with tests.
 
 ## Setting Up a Fresh Clone
@@ -23,7 +24,7 @@ commit (or stacked branch) with tests.
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu   # CPU is enough for tests
 pip install -e ".[test]"
-python -m pytest                                                     # 87 tests, ~5 s, no network
+python -m pytest                                                     # 127 tests, ~6 s, no network
 ```
 
 - `site_config.yml` is git-ignored. Without it, the path manager falls back to
@@ -56,11 +57,12 @@ python scripts/training/pipeline/midtrain.py --base-model scratch/smoke/pre --ta
     --accuracy-eval-per-category 2 --max-steps 4 --eval-steps 2 --batch-size 8 --grad-accum 1
 ```
 
-Loss should fall steadily (about 4.6 → 0.4 over the 12 pretraining steps), and
-midtraining should load the checkpoint and finish. To test attention layer
-types under `Trainer`, build a model config dict with the layer types you want
-and call `build_model_config` and `create_training_arguments` from `pretrain.py`
-directly.
+Loss should fall steadily (about 4.7 → 0.4 over the 12 pretraining steps), and
+midtraining should load the checkpoint and finish. The presets only use `conv`,
+`mamba2` and (in one preset) `flash_attention`. To test other layer types under `Trainer`, build a model
+config dict with the layer types you want (plus `ffn_types` and `param_match` if
+relevant) and call `build_model_config` and `create_training_arguments` from
+`pretrain.py` directly.
 
 ## Done
 
@@ -97,6 +99,27 @@ directly.
 - `load_base_model` raises when checkpoint weights don't match the current layer
   code, instead of loading a partly random model.
 
+### Phase 1.1: unified block structure (`4fd35cb`)
+
+- Every layer is one pre-norm block, `x + mixer(norm(x))` then `x + ffn(norm(x))`
+  (`MixedTransformerLayer(config, layer_idx)`); only the mixer depends on the
+  layer type, looked up in the `MIXERS` registry. `full_attention` used to
+  normalize after the residual add; `mamba2`, `mlp_only` and `shared_expert_moe`
+  had no mixer/FFN pairing.
+- `full_attention` and `flash_attention` are the same mixer and build identical
+  blocks; both names stay so configs keep working.
+- The FFN is chosen per layer with `ffn_types`: `swiglu` (default), `moe`
+  (`SharedExpertMoE`, now an FFN option after any mixer; the default for
+  `shared_expert_moe`) or `none` (for example original-style Mamba-2 blocks).
+  `ffn_hidden_sizes` sets the SwiGLU width per layer; the default is 2/3 of
+  `intermediate_size`, which has the parameters of the old two-matrix GELU FFN.
+- Parameter matching: `param_matched_ffn_hidden_sizes(config, reference)` sizes
+  each SwiGLU layer's FFN so its block has the parameters of a reference block,
+  and presets can set `param_match: <layer type>` (or `true` for
+  `full_attention`). `block_parameter_counts(config)` reports block sizes on the
+  meta device.
+- Tests: `tests/test_block_structure.py`.
+
 ## Behavior Changes to Keep in Mind
 
 - **Tied weights shrink parameter counts.** For example, guac-106m goes from
@@ -108,43 +131,29 @@ directly.
 - **Training length comes from the config:** `max_steps` if set, else
   `num_train_epochs`. Streaming datasets (the default `fineweb`) need an explicit
   `MAX_STEPS` or `max_steps`.
-- **Old checkpoints don't load.** Any checkpoint with a `mamba2` layer (every
-  preset uses one) was saved by the old code and now fails to load by design.
-  Retrain.
+- **Old checkpoints don't load.** The Mamba-2 rewrite and then the block
+  restructuring (1.1) renamed weights, so every checkpoint from before `4fd35cb`
+  fails to load by design. Retrain.
+- **Mamba-2 blocks now have an FFN** (1.1), so presets grew: guac-106m from
+  74.7M to 76.7M parameters, guac-3b from 2.60B to 3.05B. Conv blocks are about
+  the same size as before. Set `ffn_types` to `none` for the `mamba2` layers to
+  get the old sizes back.
+- **All FFNs are SwiGLU** (1.1), replacing the GELU FFNs of the conv, attention,
+  BASED and MoH layers, at about the same parameter count.
 - `mamba_d_state` defaults to 128 (Mamba-2 paper), up from 16.
 
-## Open Decision
+## Decisions Made
 
-**Should every block be "mixer + feed-forward"?** Today the layer types differ in
-more than how they mix tokens, which confounds comparisons between them:
-
-- `full_attention` normalizes *after* the residual add (custom_architectures.py:1162);
-  the other types normalize before.
-- `mamba2`, `mlp_only` and `shared_expert_moe` have no separate mixer or FFN
-  pairing, and parameters per layer differ by up to about 50%.
-
-**Recommendation (not yet confirmed by the user):** every block is
-`x + mixer(norm(x))` then `x + ffn(norm(x))`, so only the mixer varies (as in the
-Jamba and Granite hybrids), with a per-layer option to drop the FFN. That option
-would allow original-style Mamba-2 blocks, which have no FFN. Confirm with the
-user before starting 1.1.
+- **Block structure (2026-10-16):** every block is `x + mixer(norm(x))` then
+  `x + ffn(norm(x))`, so only the mixer varies (as in the Jamba and Granite
+  hybrids), with a per-layer option to drop the FFN. This was the review's
+  recommendation; the user had no preference, so it went ahead as 1.1.
 
 ## Next: Rest of Phase 1 (Mechanism Fidelity)
 
-Line numbers refer to `scripts/training/core/custom_architectures.py` at `446bd60`.
+Line numbers refer to `scripts/training/core/custom_architectures.py` at `4fd35cb`.
 
-### 1.1 Unified block structure
-
-- One block class: pre-norm mixer, then pre-norm FFN (SwiGLU). A mixer registry
-  replaces the `if layer_type ==` chains in `MixedTransformerLayer` (around line 1104).
-- MoE becomes an FFN option rather than a layer type.
-- `full_attention` and `flash_attention` become the same mixer: they now differ
-  only in norm placement.
-- Add a parameter-matching helper, so comparisons can hold parameters per layer constant.
-- **Done when:** every layer type has the same block shape, and existing presets
-  still build. This breaks old checkpoints again, which is acceptable.
-
-### 1.2 BASED rewrite (`BasedLayer`, line 601; `_based_attention`, line 690)
+### 1.2 BASED rewrite (`BasedMixer`, line 609; `_based_attention`, line 670)
 
 - **Currently:** an O(L²) softmax over `φ(q_i)·cumsum(φ(k))_j`. Because the
   features are ReLU (non-negative), scores never decrease with j, so attention is
@@ -157,25 +166,24 @@ Line numbers refer to `scripts/training/core/custom_architectures.py` at `446bd6
 
 ### 1.3 MoH and MoE
 
-- **MoH** (lines ~818–835): head outputs are summed into one head-sized vector,
+- **MoH** (lines ~784–801): head outputs are summed into one head-sized vector,
   then tiled H times and scaled by H, so the layer has a single head's capacity.
   Fix: `o_proj(concat_h(g_h · head_h))`, with gates scattered per token (routing is
   already per token).
-- **MoE** (`SharedExpertMoE`, line 873):
-  - The load-balancing loss (line 958) is the constant `w·N` with zero gradient,
+- **MoE** (`SharedExpertMoE`, line 839):
+  - The load-balancing loss (line 912) is the constant `w·N` with zero gradient,
     and is never added to the model loss. Implement the Switch-style
     `N·Σ f_i·P_i` and surface it through the model output.
-  - The dispatch has a per-token Python loop (line 1009), about 15× slower than
+  - The dispatch has a per-token Python loop (line 960), about 15× slower than
     attention. Vectorize it with sort/`index_add_`.
-  - It mixes normalization styles (line 1024).
 - **Tests:** vectorized MoE equals the loop version; the aux loss has a nonzero
   gradient to the router.
 
 ### 1.4 Position encoding
 
-- Learned absolute position embeddings (line 1212) default to 65,536 positions
+- Learned absolute position embeddings (line 1103) default to 65,536 positions
   (`model_configs.yaml:3`): 33.5M parameters in guac-106m and 201M in guac-3b.
-- `use_rope` (line 442) is read but nothing uses it.
+- `use_rope` (line 456) is read but nothing uses it.
 - Add RoPE to the attention mixers, and drop or shrink the absolute embeddings so
   preset names reflect real sizes.
 
@@ -192,7 +200,7 @@ This is what makes the layer comparisons meaningful.
 
 1. **Validation and metrics.** Pretraining has no held-out set:
    `dataset_utils.py:68` merges wikitext's validation split into train, and
-   `pretrain.py:446-447` sets `eval_strategy="no"` and `report_to=[]`. Add
+   `pretrain.py:460-461` sets `eval_strategy="no"` and `report_to=[]`. Add
    validation perplexity and metric logging (wandb or JSONL), and save the
    resolved config, git SHA and seed for every run.
 2. **Sequence packing.** Documents are truncated at `max_length` and the rest is
