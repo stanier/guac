@@ -22,6 +22,16 @@ SUPPORTED_LAYER_TYPES = (
     "flash_attention", "moh_attention", "shared_expert_moe",
 )
 
+# Layer types whose block has only the FFN (shared_expert_moe defaults its FFN to MoE)
+MIXERLESS_LAYER_TYPES = ("mlp_only", "shared_expert_moe")
+
+# Per-layer FFN choices for MixedLayerConfig.ffn_types
+FFN_TYPES = ("swiglu", "moe", "none")
+
+
+def default_ffn_type(layer_type: str) -> str:
+    return "moe" if layer_type == "shared_expert_moe" else "swiglu"
+
 
 def causal_attention(query, key, value, attention_mask=None, dropout_p=0.0):
     """
@@ -384,6 +394,10 @@ class MixedLayerConfig(PretrainedConfig):
         initializer_range=0.02,
         use_cache=False,
         layer_types=None,
+        # Per-layer FFN: "swiglu", "moe" or "none". None -> MoE for shared_expert_moe, SwiGLU otherwise
+        ffn_types=None,
+        # Per-layer SwiGLU width. None -> 2/3 of intermediate_size everywhere (see swiglu_hidden_size)
+        ffn_hidden_sizes=None,
         conv_kernel_size=3,
         conv_groups=1,
         # Mamba-2 specific parameters (defaults follow the Mamba-2 paper)
@@ -469,6 +483,28 @@ class MixedLayerConfig(PretrainedConfig):
             if unsupported:
                 raise ValueError(f"Unsupported layer types {unsupported}. Supported types: {list(SUPPORTED_LAYER_TYPES)}")
 
+        num_layers = len(self.layer_types)
+        self.ffn_types = list(ffn_types) if ffn_types is not None else [default_ffn_type(t) for t in self.layer_types]
+        if len(self.ffn_types) != num_layers:
+            raise ValueError(f"ffn_types length ({len(self.ffn_types)}) must match num_hidden_layers ({num_layers})")
+        unsupported = sorted(set(self.ffn_types) - set(FFN_TYPES))
+        if unsupported:
+            raise ValueError(f"Unsupported FFN types {unsupported}. Supported types: {list(FFN_TYPES)}")
+        empty = [i for i, (layer_type, ffn_type) in enumerate(zip(self.layer_types, self.ffn_types))
+                 if layer_type in MIXERLESS_LAYER_TYPES and ffn_type == "none"]
+        if empty:
+            raise ValueError(f"Layers {empty} have neither a mixer nor an FFN")
+
+        if ffn_hidden_sizes is None:
+            self.ffn_hidden_sizes = [swiglu_hidden_size(intermediate_size)] * num_layers
+        else:
+            self.ffn_hidden_sizes = [int(size) for size in ffn_hidden_sizes]
+        if len(self.ffn_hidden_sizes) != num_layers:
+            raise ValueError(f"ffn_hidden_sizes length ({len(self.ffn_hidden_sizes)}) must match "
+                             f"num_hidden_layers ({num_layers})")
+        if min(self.ffn_hidden_sizes, default=1) < 1:
+            raise ValueError(f"ffn_hidden_sizes must all be positive, got {self.ffn_hidden_sizes}")
+
         if "mamba2" in self.layer_types:
             mamba_inner = int(mamba_expand * hidden_size)
             if mamba_inner % mamba_headdim:
@@ -479,17 +515,19 @@ class MixedLayerConfig(PretrainedConfig):
                                  f"mamba_ngroups {mamba_ngroups}")
 
 
-class ConvolutionalLayer(nn.Module):
-    """
-    Convolutional layer implementation similar to those used in LFM2.
-    Uses 1D convolution for sequence modeling.
-    """
+# ---------------------------------------------------------------------------
+# Mixers: the part of a block that moves information between positions.
+# Each takes (hidden_states, attention_mask=None) and returns a tensor of the
+# same shape. Norms, residuals and the feed-forward network live in
+# MixedTransformerLayer, so every layer type gets the same block around its mixer.
+# ---------------------------------------------------------------------------
+
+
+class ConvMixer(nn.Module):
+    """Causal 1D convolution over the sequence (the short convolution used in LFM2)."""
 
     def __init__(self, config):
         super().__init__()
-        self.config = config
-
-        # Convolutional transformation
         self.conv1d = nn.Conv1d(
             in_channels=config.hidden_size,
             out_channels=config.hidden_size,
@@ -499,36 +537,10 @@ class ConvolutionalLayer(nn.Module):
             groups=config.conv_groups
         )
 
-        # Feed-forward network
-        self.feed_forward = nn.Sequential(
-            nn.Linear(config.hidden_size, config.intermediate_size),
-            nn.GELU(),
-            nn.Linear(config.intermediate_size, config.hidden_size),
-            nn.Dropout(config.hidden_dropout_prob)
-        )
-
-        # Layer normalization
-        self.input_layer_norm = get_norm_layer(config)
-        self.output_layer_norm = get_norm_layer(config)
-
     def forward(self, hidden_states, attention_mask=None):
-        # Apply input layer norm
-        normed_states = self.input_layer_norm(hidden_states)
-
-        # Convolutional processing
-        # Conv1d expects (batch, channels, sequence) format
-        conv_input = normed_states.transpose(1, 2)  # (batch, hidden_size, seq_len)
-        conv_output = self.conv1d(conv_input)[:, :, :hidden_states.shape[1]]
-        conv_output = conv_output.transpose(1, 2)  # back to (batch, seq_len, hidden_size)
-
-        # Apply residual connection
-        hidden_states = hidden_states + conv_output
-
-        # Feed-forward with residual connection
-        ff_output = self.feed_forward(self.output_layer_norm(hidden_states))
-        hidden_states = hidden_states + ff_output
-
-        return hidden_states
+        # Conv1d expects (batch, channels, sequence)
+        conv_output = self.conv1d(hidden_states.transpose(1, 2))[:, :, :hidden_states.shape[1]]
+        return conv_output.transpose(1, 2)
 
 
 class GroupedQueryAttention(nn.Module):
@@ -575,16 +587,11 @@ class GroupedQueryAttention(nn.Module):
         return self.o_proj(attn_output)
 
 
-class Mamba2Layer(nn.Module):
-    """
-    Pre-norm residual block around a Mamba-2 mixer (see mamba2.py). Like the
-    original Mamba-2 blocks, it has no separate feed-forward network.
-    """
+class ConfigMamba2Mixer(Mamba2Mixer):
+    """The Mamba-2 mixer from mamba2.py, built from a MixedLayerConfig."""
 
     def __init__(self, config):
-        super().__init__()
-        self.norm = get_norm_layer(config)
-        self.mixer = Mamba2Mixer(
+        super().__init__(
             config.hidden_size,
             d_state=config.mamba_d_state,
             d_conv=config.mamba_d_conv,
@@ -595,13 +602,14 @@ class Mamba2Layer(nn.Module):
         )
 
     def forward(self, hidden_states, attention_mask=None):
-        return hidden_states + self.mixer(self.norm(hidden_states))
+        # Right padding can't affect earlier positions in a causal scan, so the mask isn't needed
+        return super().forward(hidden_states)
 
 
-class BasedLayer(nn.Module):
+class BasedMixer(nn.Module):
     """
-    BASED (Bidirectional Attention with Sparse Efficient Decoding) layer implementation.
-    Uses bidirectional attention with feature maps for efficient computation.
+    BASED (Bidirectional Attention with Sparse Efficient Decoding) mixer.
+    Uses feature maps over queries and keys for its attention scores.
     """
 
     def __init__(self, config):
@@ -629,24 +637,8 @@ class BasedLayer(nn.Module):
         # Output projection
         self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
 
-        # Layer norms
-        self.input_norm = get_norm_layer(config, self.hidden_size)
-        self.output_norm = get_norm_layer(config, self.hidden_size)
-
-        # Feed-forward
-        self.feed_forward = nn.Sequential(
-            nn.Linear(self.hidden_size, config.intermediate_size),
-            nn.GELU(),
-            nn.Linear(config.intermediate_size, self.hidden_size),
-            nn.Dropout(config.hidden_dropout_prob)
-        )
-
     def forward(self, hidden_states, attention_mask=None):
         batch_size, seq_len, _ = hidden_states.shape
-        residual = hidden_states
-
-        # Input normalization
-        hidden_states = self.input_norm(hidden_states)
 
         # Project to Q, K, V
         q = self.q_proj(hidden_states)
@@ -668,24 +660,12 @@ class BasedLayer(nn.Module):
         k_features = self.feature_map(k)  # (B, H, L, F)
 
         # BASED attention using feature maps
-        # Compute attention via feature map dot products
         attn_output = self._based_attention(q_features, k_features, v, attention_mask)
 
         # Reshape and project output
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(batch_size, seq_len, self.hidden_size)
-        attn_output = self.o_proj(attn_output)
-
-        # First residual connection
-        hidden_states = residual + attn_output
-
-        # Feed-forward with second residual connection
-        residual = hidden_states
-        hidden_states = self.output_norm(hidden_states)
-        ff_output = self.feed_forward(hidden_states)
-        hidden_states = residual + ff_output
-
-        return hidden_states
+        return self.o_proj(attn_output)
 
     def _based_attention(self, q_features, k_features, v, attention_mask=None):
         """BASED attention computation using feature maps."""
@@ -758,26 +738,10 @@ class MixtureOfHeadAttention(nn.Module):
             nn.Linear(self.hidden_size // 4, self.num_attention_heads),
         )
 
-        # Layer norms
-        self.input_norm = get_norm_layer(config, self.hidden_size)
-        self.output_norm = get_norm_layer(config, self.hidden_size)
-
-        # Feed-forward
-        self.feed_forward = nn.Sequential(
-            nn.Linear(self.hidden_size, config.intermediate_size),
-            nn.GELU(),
-            nn.Linear(config.intermediate_size, self.hidden_size),
-            nn.Dropout(config.hidden_dropout_prob)
-        )
-
         self.attention_dropout = config.attention_probs_dropout_prob
 
     def forward(self, hidden_states, attention_mask=None):
         batch_size, seq_len, _ = hidden_states.shape
-        residual = hidden_states
-
-        # Input normalization
-        hidden_states = self.input_norm(hidden_states)
 
         # Compute head selection scores per token so routing at position t
         # only sees position t (pooling over the sequence would leak the future)
@@ -837,18 +801,12 @@ class MixtureOfHeadAttention(nn.Module):
                     attn_output = repeated
 
         # Apply output projection
-        attn_output = self.o_proj(attn_output)
+        return self.o_proj(attn_output)
 
-        # First residual connection
-        hidden_states = residual + attn_output
 
-        # Feed-forward with second residual connection
-        residual = hidden_states
-        hidden_states = self.output_norm(hidden_states)
-        ff_output = self.feed_forward(hidden_states)
-        hidden_states = residual + ff_output
-
-        return hidden_states
+# ---------------------------------------------------------------------------
+# Feed-forward networks: the per-position part of a block.
+# ---------------------------------------------------------------------------
 
 
 class SwiGLUFeedForward(nn.Module):
@@ -868,6 +826,14 @@ class SwiGLUFeedForward(nn.Module):
         gate = self.gate_proj(x)
         up = self.up_proj(x)
         return self.down_proj(torch.nn.functional.silu(gate) * up)
+
+
+def swiglu_hidden_size(intermediate_size: int) -> int:
+    """
+    SwiGLU width with the parameters of a two-matrix FFN of width intermediate_size.
+    SwiGLU has three matrices, so it gets 2/3 of the width (as in LLaMA).
+    """
+    return int(intermediate_size * 2 / 3)
 
 
 class SharedExpertMoE(nn.Module):
@@ -893,10 +859,6 @@ class SharedExpertMoE(nn.Module):
         self.moe_noise_std = getattr(config, 'moe_noise_std', 0.1)
         self.load_balancing_weight = getattr(config, 'moe_load_balancing_weight', 0.01)
 
-        # Input and output layer norms
-        self.input_norm = get_norm_layer(config, self.hidden_size)
-        self.output_norm = get_norm_layer(config, self.hidden_size)
-
         # Shared experts - always active
         if self.num_shared_experts > 0:
             self.shared_experts = nn.ModuleList([
@@ -912,14 +874,9 @@ class SharedExpertMoE(nn.Module):
             # Router for expert selection
             self.router = nn.Linear(self.hidden_size, self.num_experts, bias=False)
 
-        # Dropout
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-
     def _create_expert(self):
         """Create a single expert (FFN) with SwiGLU activation."""
-        # SwiGLU requires 2/3 intermediate size for same params due to gate
-        gate_size = int(self.intermediate_size * 2 / 3)
-        return SwiGLUFeedForward(self.hidden_size, gate_size)
+        return SwiGLUFeedForward(self.hidden_size, swiglu_hidden_size(self.intermediate_size))
 
     def _compute_routing_weights(self, hidden_states):
         """Compute routing weights with load balancing."""
@@ -964,12 +921,6 @@ class SharedExpertMoE(nn.Module):
     def forward(self, hidden_states):
         """Forward pass through shared + routed experts."""
         batch_size, seq_len, hidden_size = hidden_states.shape
-
-        # Store residual
-        residual = hidden_states
-
-        # Input normalization
-        hidden_states = self.input_norm(hidden_states)
 
         # Initialize output
         expert_output = torch.zeros_like(hidden_states)
@@ -1017,178 +968,118 @@ class SharedExpertMoE(nn.Module):
             routing_output = flat_expert_output.view(batch_size, seq_len, hidden_size)
             expert_output = expert_output + routing_output
 
-        # Apply dropout
-        expert_output = self.dropout(expert_output)
-
-        # Residual connection and output normalization
-        output = self.output_norm(expert_output + residual)
-
-        return output
+        return expert_output
 
 
-class FlashAttentionLayer(nn.Module):
-    """
-    Pre-norm attention + feed-forward block. Attention runs through
-    F.scaled_dot_product_attention, which uses FlashAttention kernels on
-    supported GPUs and dtypes and falls back to the math kernel elsewhere.
-    """
+# ---------------------------------------------------------------------------
+# The block shared by every layer type
+# ---------------------------------------------------------------------------
 
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.hidden_size = config.hidden_size
-        self.num_attention_heads = config.num_attention_heads
-        self.num_kv_heads = config.num_kv_heads
-        self.head_dim = self.hidden_size // self.num_attention_heads
-
-        assert self.hidden_size % self.num_attention_heads == 0
-
-        # Query, Key, Value projections
-        self.q_proj = nn.Linear(self.hidden_size, self.num_attention_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
-
-        # Layer norms
-        self.input_norm = get_norm_layer(config, self.hidden_size)
-        self.output_norm = get_norm_layer(config, self.hidden_size)
-
-        # Feed-forward
-        self.feed_forward = nn.Sequential(
-            nn.Linear(self.hidden_size, config.intermediate_size),
-            nn.GELU(),
-            nn.Linear(config.intermediate_size, self.hidden_size),
-            nn.Dropout(config.hidden_dropout_prob)
-        )
-
-        self.attention_dropout = config.attention_probs_dropout_prob
-
-    def forward(self, hidden_states, attention_mask=None):
-        batch_size, seq_len, _ = hidden_states.shape
-        residual = hidden_states
-
-        # Input normalization
-        hidden_states = self.input_norm(hidden_states)
-
-        # Project to Q, K, V
-        q = self.q_proj(hidden_states)
-        k = self.k_proj(hidden_states)
-        v = self.v_proj(hidden_states)
-
-        # Reshape for attention
-        q = q.view(batch_size, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
-        k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-
-        attn_output = causal_attention(
-            q, k, v, attention_mask,
-            dropout_p=self.attention_dropout if self.training else 0.0,
-        )
-
-        # Reshape and project output
-        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.hidden_size)
-        attn_output = self.o_proj(attn_output)
-
-        # First residual connection
-        hidden_states = residual + attn_output
-
-        # Feed-forward with second residual connection
-        residual = hidden_states
-        hidden_states = self.output_norm(hidden_states)
-        ff_output = self.feed_forward(hidden_states)
-        hidden_states = residual + ff_output
-
-        return hidden_states
+# Mixer class per layer type. full_attention and flash_attention are the same
+# mixer: F.scaled_dot_product_attention already picks FlashAttention kernels
+# where it can. Types mapped to None have no mixer (see MIXERLESS_LAYER_TYPES).
+MIXERS = {
+    "full_attention": GroupedQueryAttention,
+    "conv": ConvMixer,
+    "mlp_only": None,
+    "mamba2": ConfigMamba2Mixer,
+    "based": BasedMixer,
+    "flash_attention": GroupedQueryAttention,
+    "moh_attention": MixtureOfHeadAttention,
+    "shared_expert_moe": None,
+}
+assert tuple(MIXERS) == SUPPORTED_LAYER_TYPES
+assert {t for t, mixer in MIXERS.items() if mixer is None} == set(MIXERLESS_LAYER_TYPES)
 
 
 class MixedTransformerLayer(nn.Module):
     """
-    A transformer layer that can use different layer types based on configuration.
-    Supports 'full_attention', 'conv', 'mlp_only', etc.
+    One pre-norm residual block. Every layer type has the same shape:
+
+        h = x + mixer(norm(x))     skipped for layer types without a mixer
+        y = h + ffn(norm(h))       skipped when the layer's FFN type is "none"
+
+    Only the mixer differs between layer types, so comparing them isn't
+    confounded by norm placement or a missing FFN. The FFN is chosen per layer
+    by config.ffn_types (SwiGLU of width config.ffn_hidden_sizes[i], MoE, or none).
     """
 
-    def __init__(self, config, layer_type):
+    def __init__(self, config, layer_idx):
         super().__init__()
-        self.config = config
-        self.layer_type = layer_type
+        self.layer_type = config.layer_types[layer_idx]
+        self.ffn_type = config.ffn_types[layer_idx]
         self.gradient_checkpointing = False
 
-        if layer_type == "full_attention":
-            self.attention = GroupedQueryAttention(config)
-            self.attention_layer_norm = get_norm_layer(config)
+        mixer_class = MIXERS[self.layer_type]
+        self.mixer_norm = get_norm_layer(config) if mixer_class is not None else None
+        self.mixer = mixer_class(config) if mixer_class is not None else None
 
-            self.feed_forward = nn.Sequential(
-                nn.Linear(config.hidden_size, config.intermediate_size),
-                nn.GELU(),
-                nn.Linear(config.intermediate_size, config.hidden_size),
-                nn.Dropout(config.hidden_dropout_prob)
-            )
-            self.output_layer_norm = get_norm_layer(config)
-
-        elif layer_type == "conv":
-            self.conv_layer = ConvolutionalLayer(config)
-
-        elif layer_type == "mlp_only":
-            self.feed_forward = nn.Sequential(
-                nn.Linear(config.hidden_size, config.intermediate_size),
-                nn.GELU(),
-                nn.Linear(config.intermediate_size, config.hidden_size),
-                nn.Dropout(config.hidden_dropout_prob)
-            )
-            self.layer_norm = get_norm_layer(config)
-
-        elif layer_type == "mamba2":
-            self.mamba_layer = Mamba2Layer(config)
-
-        elif layer_type == "based":
-            self.based_layer = BasedLayer(config)
-
-        elif layer_type == "flash_attention":
-            self.flash_attn_layer = FlashAttentionLayer(config)
-
-        elif layer_type == "moh_attention":
-            self.moh_layer = MixtureOfHeadAttention(config)
-
-        elif layer_type == "shared_expert_moe":
-            self.moe_layer = SharedExpertMoE(config)
-
+        if self.ffn_type == "swiglu":
+            self.ffn = SwiGLUFeedForward(config.hidden_size, config.ffn_hidden_sizes[layer_idx])
+        elif self.ffn_type == "moe":
+            self.ffn = SharedExpertMoE(config)
         else:
-            raise ValueError(f"Unsupported layer type: {layer_type}. Supported types: {list(SUPPORTED_LAYER_TYPES)}")
+            self.ffn = None
+        self.ffn_norm = get_norm_layer(config) if self.ffn is not None else None
+
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states, attention_mask=None):
-        if self.layer_type == "full_attention":
-            # Self-attention with residual connection
-            attention_output = self.attention(hidden_states, attention_mask)
-            attention_output = self.attention_layer_norm(hidden_states + attention_output)
+        if self.mixer is not None:
+            hidden_states = hidden_states + self.dropout(self.mixer(self.mixer_norm(hidden_states), attention_mask))
+        if self.ffn is not None:
+            hidden_states = hidden_states + self.dropout(self.ffn(self.ffn_norm(hidden_states)))
+        return hidden_states
 
-            # Feed-forward with residual connection
-            feed_forward_output = self.feed_forward(attention_output)
-            layer_output = self.output_layer_norm(attention_output + feed_forward_output)
 
-            return layer_output
+def param_matched_ffn_hidden_sizes(config, reference_layer_type: str = "full_attention") -> List[int]:
+    """
+    Per-layer SwiGLU widths that give every block about the same parameter count.
 
-        elif self.layer_type == "conv":
-            return self.conv_layer(hidden_states, attention_mask)
+    The target is a `reference_layer_type` block with the config's default
+    SwiGLU width. Each SwiGLU layer's width is then set so that its mixer, norms
+    and FFN add up to the target, to within one unit of width (3 * hidden_size
+    parameters). Layers whose FFN is MoE or none keep their current width.
+    Pass the result as `ffn_hidden_sizes`.
 
-        elif self.layer_type == "mlp_only":
-            normed_states = self.layer_norm(hidden_states)
-            ff_output = self.feed_forward(normed_states)
-            return hidden_states + ff_output
+    Raises ValueError if a layer's mixer alone is already larger than the target.
+    """
+    if reference_layer_type not in MIXERS:
+        raise ValueError(f"Unknown reference layer type {reference_layer_type!r}. "
+                         f"Supported types: {list(SUPPORTED_LAYER_TYPES)}")
 
-        elif self.layer_type == "mamba2":
-            return self.mamba_layer(hidden_states, attention_mask)
+    norm_params = sum(p.numel() for p in get_norm_layer(config).parameters())
+    params_per_unit = 3 * config.hidden_size  # one unit of SwiGLU width: gate, up and down rows
 
-        elif self.layer_type == "based":
-            return self.based_layer(hidden_states, attention_mask)
+    def non_ffn_params(layer_type):
+        """Parameters of a block of this type apart from the FFN (its mixer and both norms)."""
+        mixer_class = MIXERS[layer_type]
+        if mixer_class is None:
+            return norm_params
+        with torch.device("meta"):
+            mixer = mixer_class(config)
+        return sum(p.numel() for p in mixer.parameters()) + 2 * norm_params
 
-        elif self.layer_type == "flash_attention":
-            return self.flash_attn_layer(hidden_states, attention_mask)
+    target = non_ffn_params(reference_layer_type) + params_per_unit * swiglu_hidden_size(config.intermediate_size)
 
-        elif self.layer_type == "moh_attention":
-            return self.moh_layer(hidden_states, attention_mask)
+    sizes = []
+    for i, (layer_type, ffn_type) in enumerate(zip(config.layer_types, config.ffn_types)):
+        if ffn_type != "swiglu":
+            sizes.append(config.ffn_hidden_sizes[i])
+            continue
+        width = round((target - non_ffn_params(layer_type)) / params_per_unit)
+        if width < 1:
+            raise ValueError(f"Layer {i} ({layer_type}) has more parameters without its FFN than a whole "
+                             f"{reference_layer_type} block, so no FFN width can match it")
+        sizes.append(width)
+    return sizes
 
-        elif self.layer_type == "shared_expert_moe":
-            return self.moe_layer(hidden_states)
+
+def block_parameter_counts(config) -> List[int]:
+    """Parameter count of each block, built on the meta device so it costs no memory."""
+    with torch.device("meta"):
+        return [sum(p.numel() for p in MixedTransformerLayer(config, i).parameters())
+                for i in range(config.num_hidden_layers)]
 
 
 class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
@@ -1214,8 +1105,8 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
 
         # Mixed transformer layers
         self.layers = nn.ModuleList([
-            MixedTransformerLayer(config, layer_type)
-            for layer_type in config.layer_types
+            MixedTransformerLayer(config, layer_idx)
+            for layer_idx in range(config.num_hidden_layers)
         ])
 
         # Final layer norm and output projection

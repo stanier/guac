@@ -78,7 +78,7 @@ def test_load_base_model_rejects_checkpoint_from_other_layer_code(tmp_path):
     save_model_with_tokenizer(MixedLayerForCausalLM(make_config(["mamba2"])), tmp_path)
     weights_path = tmp_path / "model.safetensors"
     weights = load_file(weights_path)
-    weights["layers.0.mamba_layer.old_name"] = weights.pop("layers.0.mamba_layer.mixer.A_log")
+    weights["layers.0.mixer.old_name"] = weights.pop("layers.0.mixer.A_log")
     save_file(weights, weights_path, metadata={"format": "pt"})
 
     with pytest.raises(ValueError, match="doesn't match the current model code"):
@@ -93,7 +93,7 @@ def test_tied_model_shares_embeddings_from_construction():
 @pytest.mark.parametrize("layer_type", SUPPORTED_LAYER_TYPES)
 def test_all_ones_mask_matches_no_mask(layer_type):
     torch.manual_seed(0)
-    layer = MixedTransformerLayer(make_config([layer_type]), layer_type).eval()
+    layer = MixedTransformerLayer(make_config([layer_type]), 0).eval()
     hidden_states = torch.randn(2, 10, 32)
 
     with torch.no_grad():
@@ -108,7 +108,7 @@ def test_all_ones_mask_matches_no_mask(layer_type):
 def test_right_padding_leaves_real_tokens_unchanged(layer_type):
     """Padding appended after a sequence must not change outputs at its real positions."""
     torch.manual_seed(0)
-    layer = MixedTransformerLayer(make_config([layer_type]), layer_type).eval()
+    layer = MixedTransformerLayer(make_config([layer_type]), 0).eval()
     real = torch.randn(1, 7, 32)
     padded = torch.cat([real, torch.randn(1, 3, 32)], dim=1)
     mask = torch.tensor([[1] * 7 + [0] * 3])
@@ -128,7 +128,7 @@ def test_left_padding_is_masked_without_nan(layer_type):
     Those rows must not produce NaN, and real tokens must ignore the padding.
     """
     torch.manual_seed(0)
-    layer = MixedTransformerLayer(make_config([layer_type]), layer_type).eval()
+    layer = MixedTransformerLayer(make_config([layer_type]), 0).eval()
     real = torch.randn(1, 7, 32)
     padded = torch.cat([torch.randn(1, 3, 32), real], dim=1)
     mask = torch.tensor([[0] * 3 + [1] * 7])
@@ -167,4 +167,4 @@ def test_layer_types_length_must_match_num_hidden_layers():
 def test_based_layer_builds_without_num_kv_heads():
     config = make_config(["based"], num_kv_heads=None)
     assert config.based_num_key_value_heads == config.num_attention_heads
-    MixedTransformerLayer(config, "based")
+    MixedTransformerLayer(config, 0)

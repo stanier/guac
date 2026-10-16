@@ -50,52 +50,33 @@ guac/
 
 ### Implementation Steps
 
-1. **Create Layer Class**:
+1. **Create the mixer**: the part of the block that moves information between
+positions. The block (`MixedTransformerLayer`) adds the norms, residuals and FFN,
+so the mixer returns only its own output:
 ```python
-class MyCustomLayer(nn.Module):
+class MyMixer(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.hidden_size = config.hidden_size
-        # Initialize your layer components
+        self.proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
 
     def forward(self, hidden_states, attention_mask=None):
-        # Implement forward pass
-        # Always maintain residual connections
-        return hidden_states + my_transformation(hidden_states)
+        # Must be causal: position t may only read positions <= t
+        return self.proj(my_sequence_mixing(hidden_states))
 ```
 
-2. **Add to MixedTransformerLayer**:
+2. **Register it** in `custom_architectures.py`:
 ```python
-# In custom_architectures.py, MixedTransformerLayer.forward()
-elif layer_type == "my_custom":
-    hidden_states = self.my_custom_layer(hidden_states, attention_mask)
+SUPPORTED_LAYER_TYPES = (..., "my_mixer")
+MIXERS = {..., "my_mixer": MyMixer}
 ```
 
-3. **Update Configuration**:
-```yaml
-# In architecture_configs.yaml
-architecture_defaults:
-  mixed_layer:
-    # Add your layer type parameters
-    my_custom_param: 16
-```
+3. **Add config parameters** to `MixedLayerConfig` (and pass them through
+`build_model_config` in `pretrain.py` if presets should set them).
 
-4. **Add Numerical Stability**:
-```python
-# Essential stability measures
-def forward(self, hidden_states, attention_mask=None):
-    # Check for NaN inputs
-    if torch.isnan(hidden_states).any():
-        hidden_states = torch.zeros_like(hidden_states)
-
-    # Your layer computation
-    output = my_computation(hidden_states)
-
-    # Clamp extreme values
-    output = torch.clamp(output, min=-10.0, max=10.0)
-
-    return output
-```
+4. **Run the tests.** The causality, padding, save/load and block-structure tests
+parametrize over `SUPPORTED_LAYER_TYPES`, so they cover the new type
+automatically. Don't paper over numerical problems by zeroing NaNs or clamping
+outputs: a diverging run should fail visibly.
 
 ### Design Guidelines
 

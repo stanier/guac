@@ -34,7 +34,7 @@ def check_layer_causality(layer_type):
         layer_types=[layer_type],
         intermediate_size=128,
     )
-    layer = MixedTransformerLayer(config, layer_type).eval()
+    layer = MixedTransformerLayer(config, 0).eval()
 
     x = torch.randn(2, SEQ_LEN, config.hidden_size)
     x_perturbed = x.clone()

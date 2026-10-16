@@ -28,14 +28,14 @@ from datasets import load_dataset, load_from_disk, concatenate_datasets, Iterabl
 
 try:
     from scripts.training.core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
-    from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
+    from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes
     from scripts.training.core.pipeline_utils import load_model_config, create_base_training_arguments, create_standard_callbacks, setup_gpu_optimizations, print_training_info, save_model_and_tokenizer, create_cache_dir_name, create_standard_data_collator, get_output_directory, run_training_loop, apply_debug_mode, save_trained_model
     from scripts.training.core.dataset_utils import load_pretraining_datasets, tokenize_dataset_with_cache, get_pretraining_dataset_settings
     from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
 except ImportError:
     try:
         from ..core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
-        from ..core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
+        from ..core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes
         from ..core.pipeline_utils import load_model_config, create_base_training_arguments, create_standard_callbacks, setup_gpu_optimizations, print_training_info, save_model_and_tokenizer, create_cache_dir_name, create_standard_data_collator, get_output_directory, run_training_loop, apply_debug_mode, save_trained_model
         from ..core.dataset_utils import load_pretraining_datasets, tokenize_dataset_with_cache, get_pretraining_dataset_settings
         from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
@@ -43,7 +43,7 @@ except ImportError:
         parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         sys.path.insert(0, parent_dir)
         from core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
-        from core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
+        from core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes
         from core.pipeline_utils import load_model_config, create_base_training_arguments, create_standard_callbacks, setup_gpu_optimizations, print_training_info, save_model_and_tokenizer, create_cache_dir_name, create_standard_data_collator, get_output_directory, run_training_loop, apply_debug_mode, save_trained_model
         from core.dataset_utils import load_pretraining_datasets, tokenize_dataset_with_cache, get_pretraining_dataset_settings
         from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
@@ -380,8 +380,13 @@ def pretraining_cache_key(dataset_names: List[str], tokenizer: Any, max_length: 
 
 
 def build_model_config(config: Dict[str, Any], vocab_size: int) -> MixedLayerConfig:
-    """Build the MixedLayerConfig for a model_configs.yaml entry (validates layer types)."""
-    return MixedLayerConfig(
+    """
+    Build the MixedLayerConfig for a model_configs.yaml entry (validates layer types).
+
+    With `param_match: <layer type>` (or `true` for full_attention), every SwiGLU
+    layer's FFN width is set so its block has the parameters of a block of that type.
+    """
+    model_config = MixedLayerConfig(
         vocab_size=vocab_size,
         hidden_size=config['hidden_size'],
         num_hidden_layers=config['num_hidden_layers'],
@@ -393,8 +398,17 @@ def build_model_config(config: Dict[str, Any], vocab_size: int) -> MixedLayerCon
         use_rms_norm=config.get('use_rms_norm', True),
         layer_norm_eps=config.get('layer_norm_eps', 1e-6),
         tie_word_embeddings=config.get('tie_word_embeddings', True),
+        ffn_types=config.get('ffn_types'),
+        ffn_hidden_sizes=config.get('ffn_hidden_sizes'),
         **{k: v for k, v in config.items() if k.startswith(('num_experts', 'num_shared_experts', 'moe_', 'moh_'))}
     )
+    param_match = config.get('param_match')
+    if param_match:
+        if config.get('ffn_hidden_sizes') is not None:
+            raise ValueError("Set either param_match or ffn_hidden_sizes, not both")
+        reference = 'full_attention' if param_match is True else param_match
+        model_config.ffn_hidden_sizes = param_matched_ffn_hidden_sizes(model_config, reference)
+    return model_config
 
 
 def create_model(config: Dict[str, Any], tokenizer: Any, print_params: bool = False) -> Any:

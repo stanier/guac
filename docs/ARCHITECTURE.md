@@ -38,18 +38,44 @@ Traditional Transformer:    Mixed Layer Architecture:
 
 ## 🧱 Layer Type Specifications
 
+### Block Structure (shared by every layer type)
+
+Every layer is the same pre-norm residual block (`MixedTransformerLayer`), and
+only its **mixer** (the part that moves information between positions) depends on
+the layer type:
+
+```python
+h = x + mixer(norm(x))     # skipped for mlp_only and shared_expert_moe, which have no mixer
+y = h + ffn(norm(h))       # skipped when the layer's FFN type is "none"
+```
+
+This follows hybrid models such as Jamba and Granite, and means a comparison
+between layer types isn't confounded by norm placement or a missing FFN.
+Mixers are looked up in the `MIXERS` registry in `custom_architectures.py`.
+
+**The FFN is chosen per layer** with `ffn_types` (one entry per layer):
+
+| `ffn_types` entry | FFN |
+|-------------------|-----|
+| `swiglu` (default) | SwiGLU of width `ffn_hidden_sizes[i]`; by default 2/3 of `intermediate_size`, which gives it the parameters of a two-matrix FFN of width `intermediate_size` |
+| `moe` (default for `shared_expert_moe`) | `SharedExpertMoE`: shared plus routed SwiGLU experts |
+| `none` | No FFN, e.g. for original-style Mamba-2 blocks |
+
+**Matching parameters across layer types.** Mixers differ in size (at the preset
+settings, a Mamba-2 mixer has about twice the parameters of a conv mixer), so a raw
+swap changes model size too. Set `param_match: <layer type>` (or `true` for
+`full_attention`) in a `model_configs.yaml` preset, and every SwiGLU layer's FFN
+width is set so its block has the parameters of a block of that type with the
+default width. In code, use `param_matched_ffn_hidden_sizes(config, reference)`;
+`block_parameter_counts(config)` reports each block's size without allocating it.
+
 ### 1. MLP-Only Layers
 
 **Purpose**: Pure feed-forward computation without attention mechanisms.
 
 **Implementation**:
 ```python
-class MLPOnlyLayer:
-    - LayerNorm
-    - Linear(hidden_size → intermediate_size)
-    - GELU activation
-    - Linear(intermediate_size → hidden_size)
-    - Dropout + residual connection
+mlp_only: no mixer; the block is just  x + ffn(norm(x))
 ```
 
 **Characteristics**:
@@ -63,12 +89,8 @@ class MLPOnlyLayer:
 
 **Implementation**:
 ```python
-class ConvolutionalLayer:
-    - Input LayerNorm
-    - Conv1D(kernel_size=3, groups=conv_groups)
-    - Feed-forward network
-    - Output LayerNorm
-    - Residual connections
+class ConvMixer:
+    - Causal Conv1D(kernel_size=conv_kernel_size, groups=conv_groups)
 ```
 
 **Characteristics**:
@@ -82,10 +104,7 @@ class ConvolutionalLayer:
 
 **Implementation** (`scripts/training/core/mamba2.py`, following Dao & Gu 2024):
 ```python
-class Mamba2Layer:                 # pre-norm residual block, no separate FFN
-    norm -> Mamba2Mixer -> + residual
-
-class Mamba2Mixer:
+class Mamba2Mixer:                 # its block has a SwiGLU FFN unless ffn_types says "none"
     - in_proj -> gate z, input x, B, C (shared by heads within a group), dt per head
     - Depthwise causal conv1d over x, B, C, then SiLU
     - Scalar decay per head: A = -exp(A_log), discretized as exp(A * dt),
@@ -114,12 +133,11 @@ transformers' version.
 
 **Implementation**:
 ```python
-class BasedLayer:
+class BasedMixer:
     - Query/Key/Value projections
     - Feature map transformations
     - Cumulative sum operations
-    - Efficient attention via feature maps
-    - Feed-forward network
+    - Attention via feature maps, then output projection
 ```
 
 **Key Innovation**:
@@ -138,12 +156,12 @@ class BasedLayer:
 
 **Implementation**:
 ```python
-class FlashAttentionLayer:
-    - Standard Q/K/V projections
+flash_attention uses the same mixer as full_attention (GroupedQueryAttention):
     - torch F.scaled_dot_product_attention: FlashAttention kernels on
       supported GPUs/dtypes, math kernel elsewhere (CPU included)
-    - Grouped query attention support
 ```
+
+The two names are kept so existing configs keep working; they build identical blocks.
 
 **Optimizations**:
 - **Tiling**: Process attention in blocks
@@ -271,10 +289,13 @@ The mixed architecture is designed to maintain stable gradient flow:
 
 To add a new layer type:
 
-1. **Implement the layer class** in `custom_architectures.py`
-2. **Add to MixedTransformerLayer** switch statement
+1. **Implement the mixer** in `custom_architectures.py`: an `nn.Module` built
+   from the config whose `forward(hidden_states, attention_mask=None)` returns a
+   tensor of the same shape. No norm, residual or FFN; the block adds those.
+2. **Register it** in `MIXERS` and `SUPPORTED_LAYER_TYPES`
 3. **Update configuration** with new parameters
-4. **Add stability checks** for numerical issues
+4. **Test it**: the causality, padding and block-structure tests run over every
+   registered type automatically
 5. **Document** complexity and use cases
 
 ### Best Practices

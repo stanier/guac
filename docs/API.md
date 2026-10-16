@@ -23,8 +23,10 @@ class MixedLayerConfig(PretrainedConfig):
         num_kv_heads: Optional[int] = None,
         intermediate_size: Optional[int] = None,
         layer_types: List[str] = None,
+        ffn_types: Optional[List[str]] = None,
+        ffn_hidden_sizes: Optional[List[int]] = None,
         # Layer-specific parameters
-        mamba_d_state: int = 16,
+        mamba_d_state: int = 128,
         mamba_d_conv: int = 4,
         mamba_expand: float = 2.0,
         based_feature_dim: int = 16,
@@ -39,7 +41,9 @@ class MixedLayerConfig(PretrainedConfig):
 ```
 
 **Parameters**:
-- `layer_types` (List[str]): Sequence of layer types to use. Options: `"mlp_only"`, `"conv"`, `"mamba2"`, `"based"`, `"flash_attention"`, `"full_attention"`
+- `layer_types` (List[str]): Mixer for each layer. Options: `"full_attention"`, `"flash_attention"` (same mixer), `"conv"`, `"mamba2"`, `"based"`, `"moh_attention"`, `"mlp_only"`, `"shared_expert_moe"`
+- `ffn_types` (List[str]): FFN for each layer: `"swiglu"`, `"moe"` or `"none"`. Defaults to `"moe"` for `shared_expert_moe` and `"swiglu"` elsewhere
+- `ffn_hidden_sizes` (List[int]): SwiGLU width for each layer. Defaults to 2/3 of `intermediate_size`
 - `mamba_d_state` (int): State space dimension for Mamba-2 layers
 - `mamba_expand` (float): Expansion factor for Mamba-2 internal dimension
 - `based_feature_dim` (int): Feature map dimension for BASED layers
@@ -84,137 +88,50 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
 
 ## 🧱 Layer Types
 
-### Mamba2Layer
+### MixedTransformerLayer
 
-Selective state space model implementation.
+The block shared by every layer type. Only the mixer depends on the layer type.
 
 ```python
-class Mamba2Layer(nn.Module):
-    """Mamba-2 selective state space model layer."""
+class MixedTransformerLayer(nn.Module):
+    def __init__(self, config: MixedLayerConfig, layer_idx: int):
+        """Builds layer `layer_idx`: config.layer_types[layer_idx] picks the mixer,
+        config.ffn_types[layer_idx] and config.ffn_hidden_sizes[layer_idx] the FFN."""
 
-    def __init__(self, config: MixedLayerConfig):
-        """
-        Initialize Mamba-2 layer.
-
-        Args:
-            config: Model configuration containing:
-                - hidden_size: Model dimension
-                - mamba_d_state: State space dimension
-                - mamba_d_conv: Convolution kernel size
-                - mamba_expand: Expansion factor
-        """
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """
-        Forward pass through Mamba-2 layer.
-
-        Args:
-            hidden_states: Input tensor [batch, seq_len, hidden_size]
-            attention_mask: Optional attention mask
-
-        Returns:
-            Output tensor [batch, seq_len, hidden_size]
-        """
+    def forward(self, hidden_states, attention_mask=None):
+        # h = x + mixer(mixer_norm(x))   (no mixer for mlp_only, shared_expert_moe)
+        # y = h + ffn(ffn_norm(h))       (no FFN when the FFN type is "none")
 ```
 
-**Key Components**:
-- **State Space Matrices**: A (transition), B (input), C (output), D (skip)
-- **Selective Mechanism**: Δ (delta) controls state update rates
-- **Scan Operation**: Efficient sequential state updates
+### Mixers
 
-### BasedLayer
+Each takes `(hidden_states, attention_mask=None)` and returns a tensor of the same
+shape, `[batch, seq_len, hidden_size]`. They are registered in `MIXERS`.
 
-Bidirectional attention with feature maps.
+| Layer type | Mixer | Config parameters |
+|------------|-------|-------------------|
+| `full_attention`, `flash_attention` | `GroupedQueryAttention` (`F.scaled_dot_product_attention`) | `num_attention_heads`, `num_kv_heads` |
+| `conv` | `ConvMixer` (causal Conv1D) | `conv_kernel_size`, `conv_groups` |
+| `mamba2` | `ConfigMamba2Mixer` (`Mamba2Mixer` from `mamba2.py`) | `mamba_d_state`, `mamba_d_conv`, `mamba_expand`, `mamba_headdim`, `mamba_ngroups`, `mamba_chunk_size` |
+| `based` | `BasedMixer` | `based_feature_dim`, `based_num_heads`, `based_num_key_value_heads` |
+| `moh_attention` | `MixtureOfHeadAttention` | `moh_top_k`, `moh_temperature`, `moh_noise_std` |
+| `mlp_only`, `shared_expert_moe` | none | |
 
-```python
-class BasedLayer(nn.Module):
-    """BASED: Bidirectional Attention with Sparse Efficient Decoding."""
+### FFNs
 
-    def __init__(self, config: MixedLayerConfig):
-        """
-        Initialize BASED layer.
+- `SwiGLUFeedForward(hidden_size, intermediate_size)`: the default FFN.
+- `SharedExpertMoE(config)`: shared plus routed SwiGLU experts (`num_experts`,
+  `num_shared_experts`, `moe_top_k`, ...). Used where `ffn_types` says `moe`.
 
-        Args:
-            config: Model configuration containing:
-                - hidden_size: Model dimension
-                - based_feature_dim: Feature map dimension
-                - based_num_heads: Number of attention heads
-                - based_num_key_value_heads: Number of KV heads
-        """
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """
-        Forward pass through BASED layer.
-
-        Complexity: O(L·F) instead of O(L²) where F=feature_dim
-        """
-```
-
-**Features**:
-- **Feature Maps**: ReLU(Linear(head_dim → feature_dim))
-- **Linear Complexity**: O(L·F) instead of quadratic attention
-- **Causal Attention**: Maintained through cumulative operations
-
-### ConvolutionalLayer
-
-1D convolution for sequence modeling.
+### Parameter helpers
 
 ```python
-class ConvolutionalLayer(nn.Module):
-    """1D convolutional layer for local pattern recognition."""
+param_matched_ffn_hidden_sizes(config, reference_layer_type="full_attention") -> List[int]
+    """SwiGLU widths that give every SwiGLU block the parameter count of a
+    reference block; pass the result as ffn_hidden_sizes."""
 
-    def __init__(self, config: MixedLayerConfig):
-        """
-        Initialize convolutional layer.
-
-        Args:
-            config: Model configuration containing:
-                - hidden_size: Model dimension
-                - conv_kernel_size: Convolution kernel size
-                - conv_groups: Depthwise convolution groups
-        """
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """
-        Forward pass through convolutional layer.
-
-        Complexity: O(d² + d·k·L) where k=kernel_size
-        """
-```
-
-### FlashAttentionLayer
-
-Memory-efficient attention implementation.
-
-```python
-class FlashAttentionLayer(nn.Module):
-    """Flash Attention layer with memory optimization."""
-
-    def __init__(self, config: MixedLayerConfig):
-        """Initialize Flash Attention layer."""
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """
-        Forward pass with Flash Attention if available.
-
-        Falls back to standard attention if Flash Attention not installed.
-        """
+block_parameter_counts(config) -> List[int]
+    """Parameter count of each block, built on the meta device."""
 ```
 
 ## 🎯 Training Scripts
