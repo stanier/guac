@@ -316,11 +316,24 @@ class MetricsLoggerCallback(TrainerCallback):
 
     Evaluation results are written from on_evaluate rather than on_log, so they
     include metrics that callbacks listed before this one add during evaluation
-    (such as midtraining's held-out accuracy).
+    (such as midtraining's held-out accuracy). At the start of training, entries
+    past the starting step are dropped: a run resumed from an earlier checkpoint
+    would otherwise log those steps twice, and a fresh run into the same
+    directory starts a fresh file.
     """
 
     def __init__(self, path: str):
         self.path = path
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        if not state.is_world_process_zero or not os.path.exists(self.path):
+            return
+        kept = []
+        if state.global_step > 0:
+            with open(self.path) as f:
+                kept = [line for line in f if line.strip() and json.loads(line).get('step', 0) <= state.global_step]
+        with open(self.path, 'w') as f:
+            f.writelines(kept)
 
     def write(self, state, values):
         if not values or not state.is_world_process_zero:

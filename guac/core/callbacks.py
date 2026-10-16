@@ -50,12 +50,15 @@ class CustomProgressCallback(TrainerCallback):
             self.status_bar.set_description(self.sample(model))
 
     def sample(self, model) -> str:
-        """Greedy continuation of the BOS token (or an empty prompt)."""
-        prompt = self.tokenizer.bos_token or getattr(self.tokenizer, 'cls_token', None) or ""
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(model.device)
+        """Greedy continuation of the BOS token (EOS if there is none)."""
+        # Not tokenizer(bos_token): most tokenizers append EOS, which would end the prompt
+        start = self.tokenizer.bos_token_id
+        if start is None:
+            start = self.tokenizer.eos_token_id
+        input_ids = torch.tensor([[start]], device=model.device)
         model.eval()
         with torch.no_grad():
-            generated = model.generate(inputs["input_ids"], attention_mask=inputs.get("attention_mask"),
+            generated = model.generate(input_ids, attention_mask=torch.ones_like(input_ids),
                                        max_new_tokens=self.max_new_tokens, do_sample=False,
                                        pad_token_id=self.tokenizer.pad_token_id,
                                        eos_token_id=self.tokenizer.eos_token_id)[0]

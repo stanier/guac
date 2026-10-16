@@ -33,6 +33,18 @@ def test_resuming_from_a_checkpoint(tmp_path):
         torch.testing.assert_close(a, b, atol=1e-4, rtol=0)
 
 
+def test_metrics_file_has_each_step_once_after_resuming(tmp_path):
+    import json
+    from guac.core.pipeline_utils import MetricsLoggerCallback
+    run = tmp_path / "run"
+    for max_steps, resume in ((4, None), (4, str(run / "checkpoint-2"))):
+        trainer = tiny_trainer(run, max_steps)
+        trainer.add_callback(MetricsLoggerCallback(str(run / "metrics.jsonl")))
+        run_training_loop(trainer, resume)
+    entries = [json.loads(line) for line in (run / "metrics.jsonl").read_text().splitlines()]
+    assert [entry['step'] for entry in entries if 'loss' in entry] == [1, 2, 3, 4]
+
+
 def test_checkpoints_hold_the_tokenizer(tmp_path):
     from guac.tokenizer.build_char_tokenizer import build_char_tokenizer
     tokenizer = build_char_tokenizer(str(tmp_path / "tok"))
