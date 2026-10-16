@@ -46,19 +46,40 @@ def autocast_disabled(device_type: str):
     return torch.autocast(device_type=device_type, enabled=False)
 
 
-def causal_conv1d(x: torch.Tensor, conv: nn.Conv1d, state: Optional[torch.Tensor] = None):
+def causal_conv1d(x: torch.Tensor, conv: nn.Conv1d, state: Optional[torch.Tensor] = None,
+                  document_ids: Optional[torch.Tensor] = None):
     """
     Causal 1D convolution of x (batch, channels, length) with conv's weights.
 
     state holds the kernel_size - 1 inputs before x (zeros at the start of a
     sequence). Returns the output (batch, out_channels, length) and the last
     kernel_size - 1 inputs, the state for continuing the sequence.
+
+    document_ids (batch, length), if given, keeps each position's window inside
+    its own document: inputs from an earlier document count as zeros, as at
+    the start of a sequence. It can't be combined with a state.
     """
     context = conv.kernel_size[0] - 1
     if state is None:
         state = x.new_zeros(x.size(0), x.size(1), context)
+    elif document_ids is not None:
+        raise ValueError("causal_conv1d takes a state or document_ids, not both")
     x = torch.cat([state.to(x.dtype), x], dim=-1)
-    output = F.conv1d(x, conv.weight, conv.bias, groups=conv.groups)
+    if document_ids is None:
+        output = F.conv1d(x, conv.weight, conv.bias, groups=conv.groups)
+        return output, x[:, :, x.size(-1) - context:]
+
+    # One single-tap convolution per kernel offset, each with the inputs from other documents zeroed
+    length = document_ids.size(1)
+    padded_ids = F.pad(document_ids, (context, 0), value=-1)
+    output = None
+    for tap in range(context + 1):
+        same_document = (padded_ids[:, tap:tap + length] == document_ids)[:, None].to(x.dtype)
+        term = F.conv1d(x[:, :, tap:tap + length] * same_document, conv.weight[:, :, tap:tap + 1],
+                        groups=conv.groups)
+        output = term if output is None else output + term
+    if conv.bias is not None:
+        output = output + conv.bias[:, None]
     return output, x[:, :, x.size(-1) - context:]
 
 
@@ -80,9 +101,34 @@ def segment_sum(x: torch.Tensor) -> torch.Tensor:
     return sums.masked_fill(~lower, float('-inf'))
 
 
+def scan_chunk_states(states: torch.Tensor, log_decay: torch.Tensor, chunk_size: int,
+                      document_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """
+    The recurrence between chunks: h_z = exp(log_decay_z) * h_{z-1} + states_z, from h_{-1} = 0.
+
+    states is (batch, length, heads, head_dim, state_size) and log_decay
+    (batch, heads, length). Up to 2 * chunk_size entries this is one masked
+    decay matrix, as in the reference ssd_minimal. Longer sequences of chunk
+    states (past 2 * chunk_size^2 tokens) are scanned with ssd_chunked itself
+    (each state flattened to a vector, with state size 1), so the cost stays
+    linear in the number of chunks instead of growing with its square.
+    document_ids (batch, length) resets h where it changes.
+    """
+    batch, length, heads, head_dim, state_size = states.shape
+    if length <= 2 * chunk_size:
+        decay = torch.exp(segment_sum(log_decay))  # (batch, heads, z, c)
+        if document_ids is not None:
+            decay = decay * (document_ids[:, None, :, None] == document_ids[:, None, None, :])
+        return torch.einsum('bhzc,bchpn->bzhpn', decay, states)
+    ones = states.new_ones(batch, length, heads, 1)
+    flat = ssd_chunked(states.flatten(3), log_decay.transpose(1, 2), ones, ones, chunk_size,
+                       document_ids=document_ids)
+    return flat.reshape(batch, length, heads, head_dim, state_size)
+
+
 def ssd_chunked(x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, c: torch.Tensor,
                 chunk_size: int, initial_state: Optional[torch.Tensor] = None,
-                return_final_state: bool = False):
+                return_final_state: bool = False, document_ids: Optional[torch.Tensor] = None):
     """
     Chunked SSD scan. For each head, starting from h_0 (zeros by default), computes
 
@@ -97,6 +143,9 @@ def ssd_chunked(x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, c: torch.Tens
         chunk_size: Tokens per chunk
         initial_state: Optional h_0, (batch, heads, head_dim, state_size)
         return_final_state: Also return h after the last token
+        document_ids: Optional (batch, length) non-decreasing ids; where the id
+            changes, h restarts from zero (h_{t-1} is dropped), so no state passes
+            between packed documents. initial_state belongs to the first document
 
     Returns:
         y: (batch, length, heads, head_dim), and the final state if requested
@@ -107,6 +156,9 @@ def ssd_chunked(x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, c: torch.Tens
         # Zero inputs with zero log-decay after the end leave earlier outputs unchanged
         x, b, c = (F.pad(t, (0, 0, 0, 0, 0, pad)) for t in (x, b, c))
         a = F.pad(a, (0, 0, 0, pad))
+        if document_ids is not None:
+            # Padding continues the last document, so the final state is that document's
+            document_ids = torch.cat([document_ids, document_ids[:, -1:].expand(-1, pad)], dim=1)
     num_chunks = x.size(1) // chunk_size
 
     # (batch, chunks, chunk_len, heads, dim)
@@ -114,13 +166,25 @@ def ssd_chunked(x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, c: torch.Tens
     # (batch, heads, chunks, chunk_len)
     a = a.reshape(batch, num_chunks, chunk_size, heads).permute(0, 3, 1, 2)
     a_cumsum = torch.cumsum(a, dim=-1)
+    if document_ids is not None:
+        document_ids = document_ids.reshape(batch, num_chunks, chunk_size)
+        chunk_end_ids = document_ids[:, :, -1]
+        # The document of the state entering each chunk: the one the previous chunk ended in
+        entering_ids = torch.cat([document_ids[:, :1, 0], chunk_end_ids[:, :-1]], dim=1)
 
     # 1. Contributions from earlier tokens in the same chunk (causal, attention-like)
-    scores = torch.einsum('bclhn,bcshn->bhcls', c, b) * torch.exp(segment_sum(a))
+    decay = torch.exp(segment_sum(a))  # (batch, heads, chunks, l, s): decay from position s to l
+    scores = torch.einsum('bclhn,bcshn->bhcls', c, b) * decay
+    if document_ids is not None:
+        scores = scores * (document_ids[:, None, :, :, None] == document_ids[:, None, :, None, :])
     y_within = torch.einsum('bhcls,bcshp->bclhp', scores, x)
 
     # 2. Each chunk's own contribution to the state at its end
-    decay_to_end = torch.exp(a_cumsum[..., -1:] - a_cumsum)
+    # The last row of the decay matrix, rather than a difference of cumulative sums, which
+    # would carry rounding error (and gradient) from earlier positions, even other documents'
+    decay_to_end = decay[..., -1, :]
+    if document_ids is not None:
+        decay_to_end = decay_to_end * (document_ids == chunk_end_ids[..., None])[:, None]
     chunk_states = torch.einsum('bclhn,bhcl,bclhp->bchpn', b, decay_to_end, x)
 
     # 3. State entering each chunk: earlier chunks' states (and h_0), decayed across the chunks in between
@@ -129,12 +193,15 @@ def ssd_chunked(x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, c: torch.Tens
     else:
         initial_state = initial_state.to(chunk_states.dtype)[:, None]
     chunk_states = torch.cat([initial_state, chunk_states], dim=1)
-    chunk_decay = torch.exp(segment_sum(F.pad(a_cumsum[..., -1], (1, 0))))
-    boundary_states = torch.einsum('bhzc,bchpn->bzhpn', chunk_decay, chunk_states)
+    state_ids = None if document_ids is None else torch.cat([entering_ids[:, :1], chunk_end_ids], dim=1)
+    boundary_states = scan_chunk_states(chunk_states, F.pad(a_cumsum[..., -1], (1, 0)), chunk_size, state_ids)
     entering_states = boundary_states[:, :-1]
 
     # 4. Contributions from the state entering the chunk
-    y_carried = torch.einsum('bclhn,bchpn,bhcl->bclhp', c, entering_states, torch.exp(a_cumsum))
+    carried_decay = torch.exp(a_cumsum)
+    if document_ids is not None:
+        carried_decay = carried_decay * (document_ids == entering_ids[..., None])[:, None]
+    y_carried = torch.einsum('bclhn,bchpn,bhcl->bclhp', c, entering_states, carried_decay)
 
     y = (y_within + y_carried).reshape(batch, num_chunks * chunk_size, heads, head_dim)[:, :length]
     if return_final_state:
@@ -220,12 +287,16 @@ class Mamba2Mixer(nn.Module):
         self.out_proj = nn.Linear(self.d_inner, hidden_size, bias=False)
 
     def forward(self, hidden_states: torch.Tensor, attention_mask: Optional[torch.Tensor] = None,
-                cache: Optional[dict] = None) -> torch.Tensor:
+                cache: Optional[dict] = None, document_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         attention_mask (batch, length), 1 for real tokens, zeroes padding so it
         never enters the convolution or the state (left padding included).
         cache, a dict, carries "conv_state" and "ssm_state" between calls for generation.
+        document_ids (batch, length), non-decreasing, restarts the convolution and
+        the state wherever it changes, so packed documents don't mix (not with a cache).
         """
+        if document_ids is not None and cache is not None:
+            raise ValueError("Mamba2Mixer takes a cache or document_ids, not both")
         batch, length, _ = hidden_states.shape
         keep = None if attention_mask is None else attention_mask[:, -length:, None].to(hidden_states.dtype)
         if keep is not None:
@@ -233,7 +304,7 @@ class Mamba2Mixer(nn.Module):
         z, xbc, dt = torch.split(self.in_proj(hidden_states), [self.d_inner, self.conv_dim, self.nheads], dim=-1)
 
         conv_state = cache.get("conv_state") if cache is not None else None
-        xbc, conv_state = causal_conv1d(xbc.transpose(1, 2), self.conv1d, conv_state)
+        xbc, conv_state = causal_conv1d(xbc.transpose(1, 2), self.conv1d, conv_state, document_ids)
         xbc = F.silu(xbc.transpose(1, 2))
         if keep is not None:
             xbc = xbc * keep
@@ -245,8 +316,9 @@ class Mamba2Mixer(nn.Module):
 
         if self.kernel_scan is not None and hidden_states.is_cuda and cache is None:
             # The fused kernel takes raw dt, grouped B/C and D, and computes the same y as below
+            seq_idx = None if document_ids is None else document_ids.to(torch.int32)
             y = self.kernel_scan(x, dt, -torch.exp(self.A_log.float()), b, c, self.chunk_size,
-                                 D=self.D, dt_bias=self.dt_bias, dt_softplus=True)
+                                 D=self.D, dt_bias=self.dt_bias, dt_softplus=True, seq_idx=seq_idx)
             y = y.reshape(batch, length, self.d_inner)
             return self.out_proj(self.norm(y, z))
 
@@ -262,7 +334,7 @@ class Mamba2Mixer(nn.Module):
             dt = F.softplus(dt.to(scan_dtype) + self.dt_bias.to(scan_dtype))
             A = -torch.exp(self.A_log.to(scan_dtype))
             if cache is None:
-                y = ssd_chunked(x * dt[..., None], A * dt, b, c, self.chunk_size)
+                y = ssd_chunked(x * dt[..., None], A * dt, b, c, self.chunk_size, document_ids=document_ids)
             else:
                 ssm_state = cache.get("ssm_state")
                 if ssm_state is not None and length == 1:

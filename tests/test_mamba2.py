@@ -16,12 +16,14 @@ from guac.core.custom_architectures import MixedLayerConfig
 from guac.core.mamba2 import Mamba2Mixer, ssd_chunked
 
 
-def sequential_scan(x, a, b, c):
-    """The recurrence ssd_chunked computes, one token at a time."""
+def sequential_scan(x, a, b, c, document_ids=None):
+    """The recurrence ssd_chunked computes, one token at a time (restarting where document_ids change)."""
     batch, length, heads, head_dim = x.shape
     state = x.new_zeros(batch, heads, head_dim, b.size(-1))
     outputs = []
     for t in range(length):
+        if document_ids is not None and t > 0:
+            state = state * (document_ids[:, t] == document_ids[:, t - 1]).to(state.dtype)[:, None, None, None]
         state = torch.exp(a[:, t])[..., None, None] * state + x[:, t, :, :, None] * b[:, t, :, None, :]
         outputs.append(torch.einsum('bhpn,bhn->bhp', state, c[:, t]))
     return torch.stack(outputs, dim=1)
@@ -40,6 +42,47 @@ def random_scan_inputs(length, heads=3, head_dim=4, state_size=5, seed=0):
 def test_chunked_scan_matches_sequential_recurrence(length, chunk_size):
     x, a, b, c = random_scan_inputs(length)
     torch.testing.assert_close(ssd_chunked(x, a, b, c, chunk_size), sequential_scan(x, a, b, c))
+
+
+@pytest.mark.parametrize("length,chunk_size", [(200, 4), (64, 4), (300, 8)])
+def test_many_chunks_scan_linearly_and_match_sequential_recurrence(length, chunk_size):
+    """More chunk states than chunk_size go through the recursive (linear) inter-chunk scan."""
+    x, a, b, c = random_scan_inputs(length)
+    y, final_state = ssd_chunked(x, a, b, c, chunk_size, return_final_state=True)
+    torch.testing.assert_close(y, sequential_scan(x, a, b, c))
+    _, expected_state = ssd_chunked(x, a, b, c, chunk_size=length + 1, return_final_state=True)
+    torch.testing.assert_close(final_state, expected_state)
+
+
+def random_document_ids(length, seed=0):
+    """(2, length) non-decreasing ids: a few documents of random lengths, one of them a single token."""
+    generator = torch.Generator().manual_seed(seed)
+    starts = torch.rand(2, length, generator=generator) < 0.08
+    starts[:, 0] = False
+    starts[0, 5:7] = True
+    return starts.long().cumsum(dim=1)
+
+
+@pytest.mark.parametrize("length,chunk_size", [(23, 4), (40, 8), (150, 4), (9, 16), (600, 4)])
+def test_document_ids_restart_the_state(length, chunk_size):
+    x, a, b, c = random_scan_inputs(length)
+    document_ids = random_document_ids(length)
+    y, final_state = ssd_chunked(x, a, b, c, chunk_size, return_final_state=True, document_ids=document_ids)
+    torch.testing.assert_close(y, sequential_scan(x, a, b, c, document_ids))
+
+    # The final state is the last document's alone
+    last_start = int((document_ids[1] == document_ids[1, -1]).nonzero()[0])
+    _, expected = ssd_chunked(*(t[1:, last_start:] for t in (x, a, b, c)), chunk_size, return_final_state=True)
+    torch.testing.assert_close(final_state[1:], expected)
+
+
+def test_scan_gradients_with_documents_and_many_chunks():
+    inputs = [t.requires_grad_() for t in random_scan_inputs(70)]
+    document_ids = random_document_ids(70, seed=1)
+    chunked = torch.autograd.grad(ssd_chunked(*inputs, chunk_size=4, document_ids=document_ids).square().sum(), inputs)
+    sequential = torch.autograd.grad(sequential_scan(*inputs, document_ids).square().sum(), inputs)
+    for got, expected in zip(chunked, sequential):
+        torch.testing.assert_close(got, expected)
 
 
 def test_chunked_scan_gradients_match_sequential_recurrence():
