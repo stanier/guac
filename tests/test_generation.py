@@ -1,9 +1,11 @@
 """
 Tests for cached generation: decoding token by token with MixedLayerCache
 gives the same logits as running the whole sequence, for every layer type,
-and generate() with the cache matches generate() without it.
+and generate() with the cache matches generate() without it, also when it
+continues a prompt cache it is given.
 """
 
+import copy
 import sys
 from pathlib import Path
 
@@ -83,6 +85,32 @@ def test_generate_with_cache_matches_generate_without():
         cached = model.generate(prompts, use_cache=True, **kwargs)
         uncached = model.generate(prompts, use_cache=False, **kwargs)
     assert torch.equal(cached, uncached)
+
+
+@pytest.mark.parametrize("layer_type", SUPPORTED_LAYER_TYPES)
+@pytest.mark.parametrize("cached_tokens", [3, 6])
+def test_generate_continues_a_passed_prompt_cache(layer_type, cached_tokens):
+    """generate() used to fail on a passed cache (transformers indexed it as cache[0][0])."""
+    model = make_model([layer_type, layer_type])
+    prompts = torch.randint(1, 40, (2, 7))
+    kwargs = dict(max_new_tokens=8, do_sample=False, pad_token_id=0, eos_token_id=None)
+    with torch.no_grad():
+        expected = model.generate(prompts, **kwargs)
+        cache = model(prompts[:, :cached_tokens], use_cache=True).past_key_values
+        reused = copy.deepcopy(cache)
+        assert torch.equal(model.generate(prompts, past_key_values=cache, **kwargs), expected)
+        # generate() advances the cache it is given, so reuse takes a copy
+        assert cache.seen_tokens == 7 + 8 - 1
+        assert torch.equal(model.generate(prompts, past_key_values=reused, **kwargs), expected)
+
+
+def test_generate_refuses_a_cache_that_has_seen_the_whole_prompt():
+    model = make_model(["mamba2"])
+    prompts = torch.randint(1, 40, (1, 5))
+    with torch.no_grad():
+        cache = model(prompts, use_cache=True).past_key_values
+        with pytest.raises(ValueError, match="without its last token"):
+            model.generate(prompts, past_key_values=cache, max_new_tokens=2, pad_token_id=0)
 
 
 def test_batched_left_padded_generate_matches_one_at_a_time():

@@ -1245,11 +1245,35 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None, attention_mask=None,
                                       use_cache=None, **kwargs):
-        """With a cache, feed only the tokens it hasn't seen; the mask always covers the whole sequence."""
+        """
+        With a cache, feed only the tokens it hasn't seen; the mask always covers the whole sequence.
+
+        generate() also takes a cache of the prompt's first tokens as past_key_values,
+        e.g. model(prompt[:, :-1], use_cache=True).past_key_values, and continues it
+        in place (copy.deepcopy it to reuse it). The cache must leave at least one
+        prompt token unseen: the next token's logits come from that token, and
+        recurrent states can't be rewound to recompute it.
+        """
         if past_key_values is not None:
+            if past_key_values.seen_tokens >= input_ids.size(1):
+                raise ValueError(f"The cache has already seen {past_key_values.seen_tokens} tokens, and the input "
+                                 f"has {input_ids.size(1)}. Pass the cache of the prompt without its last token")
             input_ids = input_ids[:, past_key_values.seen_tokens:]
         return {"input_ids": input_ids, "past_key_values": past_key_values,
                 "attention_mask": attention_mask, "use_cache": use_cache}
+
+    def _get_initial_cache_position(self, input_ids, model_kwargs):
+        """
+        generate()'s positions of the prompt tokens the cache hasn't seen. transformers
+        4.46 reads the length of a cache that isn't one of its Cache classes as
+        cache[0][0].shape[2], which a MixedLayerCache doesn't support. The model
+        itself doesn't use cache_position (it counts with seen_tokens).
+        """
+        cache = model_kwargs.get("past_key_values")
+        past_length = cache.get_seq_length() if cache is not None else 0
+        inputs = model_kwargs["inputs_embeds"] if "inputs_embeds" in model_kwargs else input_ids
+        model_kwargs["cache_position"] = torch.arange(past_length, inputs.size(1), device=inputs.device)
+        return model_kwargs
 
     def _reorder_cache(self, past_key_values, beam_idx):
         """Select the cache entries of the kept beams."""
