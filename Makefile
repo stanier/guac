@@ -51,6 +51,7 @@ help:
 	@echo "  DEBUG=false      - Enable debug mode with smaller datasets"
 	@echo "  FORCE_RETOKENIZE=false - Force re-tokenization even if cached"
 	@echo "  MIDTRAIN_ARGS=   - Extra midtrain.py flags, e.g. \"--learning-rate 1e-3 --reverse-answers\""
+	@echo "  MAX_STEPS=       - Override pretrain step budget (default: 1000, or 20 with DEBUG=true)"
 
 # Configuration variables
 CONFIG ?= guac-3b
@@ -64,6 +65,7 @@ MAX_LENGTH ?= 1024
 TOKENIZER_PATH ?=
 FORCE_RETOKENIZE ?= false
 MIDTRAIN_ARGS ?=
+MAX_STEPS ?=
 
 # Dataset download configuration
 DOWNLOAD_CSV ?= datasets_download.csv
@@ -80,10 +82,11 @@ POSTTRAIN_DIR = $(MODEL_DIR)/posttraining/$(CONFIG)_$(TASK)_$(MODE)
 DEBUG_FLAG = $(if $(filter true,$(DEBUG)),--debug,)
 PROFILING_FLAG = $(if $(filter true,$(ENABLE_PROFILING)),--enable-profiling,)
 RETOKENIZE_FLAG = $(if $(filter true,$(FORCE_RETOKENIZE)),--force-retokenize,)
+MAX_STEPS_FLAG = $(if $(MAX_STEPS),--max-steps $(MAX_STEPS),)
 
 # Installation and setup
 install:
-	pip install -r requirements.txt
+	pip install -e .
 	@if [ ! -f site_config.yml ]; then \
 		cp site_config.example.yml site_config.yml; \
 		echo "Created site_config.yml - please configure for your environment"; \
@@ -140,7 +143,7 @@ pretrain:
 		--model-config $(CONFIG) \
 		--datasets $(DATASETS) \
 		--output-dir $(PRETRAIN_DIR) \
-		$(DEBUG_FLAG) $(PROFILING_FLAG) $(RETOKENIZE_FLAG)
+		$(DEBUG_FLAG) $(PROFILING_FLAG) $(RETOKENIZE_FLAG) $(MAX_STEPS_FLAG)
 	@echo "✅ Pre-training complete: $(PRETRAIN_DIR)"
 
 # Stage 2: Mid-training (task specialization)

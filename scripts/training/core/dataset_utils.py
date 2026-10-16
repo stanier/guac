@@ -11,14 +11,53 @@ from typing import Any, List, Dict, Optional
 from datasets import load_dataset, load_from_disk, concatenate_datasets, Dataset
 
 
+def _get_pretraining_dataset_configs() -> Dict[str, Any]:
+    """Look up HF dataset definitions (fineweb, fineweb-edu, etc.) from site_config.yml."""
+    try:
+        from .path_manager import get_dataset_configs
+    except ImportError:
+        from scripts.training.core.path_manager import get_dataset_configs
+    return get_dataset_configs().get('pretraining_datasets', {})
+
+
+def _load_huggingface_pretraining_dataset(dataset_config: Dict[str, Any], dataset_name: str) -> Any:
+    """Load a single HF streaming/non-streaming dataset as configured in site_config.yml."""
+    config_name = dataset_config.get('config_name')
+    streaming = dataset_config.get('streaming', False)
+    max_articles = dataset_config.get('max_articles')
+    text_field = dataset_config.get('text_field', 'text')
+
+    print(f"  Loading {dataset_config['dataset_name']}" +
+          (f"/{config_name}" if config_name else "") +
+          f" (streaming: {streaming}, max_articles: {max_articles})")
+
+    dataset = load_dataset(dataset_config['dataset_name'], config_name, streaming=streaming, split='train')
+
+    if text_field != 'text':
+        dataset = dataset.rename_column(text_field, 'text')
+
+    if max_articles:
+        if streaming:
+            dataset = dataset.take(max_articles)
+        elif len(dataset) > max_articles:
+            dataset = dataset.select(range(max_articles))
+
+    return dataset
+
+
 def load_pretraining_datasets(dataset_names: List[str]) -> Any:
     """Load and prepare datasets for pre-training."""
+    hf_dataset_configs = _get_pretraining_dataset_configs()
     datasets = []
 
     for dataset_name in dataset_names:
         print(f"📚 Loading dataset: {dataset_name}")
 
-        if dataset_name == 'wikitext-103':
+        if dataset_name in hf_dataset_configs:
+            dataset = _load_huggingface_pretraining_dataset(hf_dataset_configs[dataset_name], dataset_name)
+            datasets.append(dataset)
+
+        elif dataset_name == 'wikitext-103':
             dataset = load_dataset('wikitext', 'wikitext-103-v1')
             # Combine train and validation for pre-training
             combined = concatenate_datasets([dataset['train'], dataset['validation']])

@@ -57,13 +57,13 @@ model_training_configs:
     learning_rate: 1e-4
     warmup_ratio: 0.1
     weight_decay: 0.1
-    pdbs_train: 8
-    pdbs_eval: 8
+    pdbs_train: 16
+    pdbs_eval: 16
     grad_accum_steps: 16  # Higher grad accum for smaller batches
     num_train_epochs: 3
     architecture: mixed_layer
     layer_types: [
-      conv, conv, mamba2, conv,
+      flash_attention, conv, mamba2, conv,
     ]
     max_sequence_length: 256  # Shorter for better memory usage
 

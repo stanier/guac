@@ -134,6 +134,11 @@ class PathManager:
         result.mkdir(parents=True, exist_ok=True)
         return result
 
+    def get_dataset_configs(self) -> Dict[str, Any]:
+        """Get the dataset_configs section from site_config.yml (HF dataset definitions)."""
+        config = self._load_config()
+        return config.get('dataset_configs', {})
+
     def get_dataset_path(self, dataset_name: str) -> Path:
         """Get path for a specific dataset."""
         dirs = self._get_directories()
@@ -403,6 +408,11 @@ def get_model_output_path(stage: str, config_name: str, task: Optional[str] = No
 def get_huggingface_cache_dir() -> Path:
     """Get HuggingFace dataset cache directory."""
     return get_path_manager().get_huggingface_cache_dir()
+
+
+def get_dataset_configs() -> Dict[str, Any]:
+    """Get the dataset_configs section from site_config.yml (HF dataset definitions)."""
+    return get_path_manager().get_dataset_configs()
 
 
 def create_cache_key(prefix: str, **kwargs) -> str:

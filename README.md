@@ -17,8 +17,6 @@ make install
 # (copies site_config.example.yml -> site_config.yml if it doesn't exist yet)
 ```
 
-> Note: `make install` runs `pip install -r requirements.txt`, but this repo does not currently ship a `requirements.txt`. Create one (or install `torch`/`transformers`/`pyyaml`/`sentencepiece`/`jinja2` manually) before running `make install`.
-
 Then edit `site_config.yml` with your paths and dataset preferences — this file is git-ignored so each environment can have its own local configuration.
 
 ### Basic Training
@@ -33,6 +31,10 @@ make pipeline DEBUG=true      # Smaller datasets for a fast debug run
 make pretrain
 make midtrain
 make posttrain
+
+# Quick smoke test: cap pre-training at a handful of steps instead of the full budget
+# (DEBUG=true alone only shrinks the dataset; step count still defaults to 1000, or 20 with DEBUG=true)
+make pretrain CONFIG=guac-106m DEBUG=true MAX_STEPS=5
 
 # Legacy shortcuts (still wired to the pipeline scripts)
 make debug   # guac-3b config, debug mode
@@ -132,7 +134,12 @@ make pipeline TASK=reasoning
 
 # Debug mode with smaller datasets
 make pipeline DEBUG=true
+
+# Cap pre-training at a fixed step count (useful for quick smoke tests)
+make pretrain MAX_STEPS=50
 ```
+
+Pre-training datasets (`fineweb`, `fineweb-edu`, `finewiki`, plus `wikitext-103`/`openwebtext`) are resolved via the `pretraining_datasets` section of `site_config.yml`, so `DATASETS=` accepts any key defined there.
 
 ### Tokenizer & Dataset Preparation
 ```bash

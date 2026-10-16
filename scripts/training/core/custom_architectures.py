@@ -932,20 +932,21 @@ class MixtureOfHeadAttention(nn.Module):
         # Input normalization
         hidden_states = self.input_norm(hidden_states)
 
-        # Compute head selection scores
-        # Use mean pooling across sequence for routing decision
-        routing_input = hidden_states.mean(dim=1)  # [batch_size, hidden_size]
-        head_scores = self.head_router(routing_input)  # [batch_size, num_attention_heads]
+        # Compute head selection scores per token so routing at position t
+        # only sees position t (pooling over the sequence would leak the future)
+        head_scores = self.head_router(hidden_states)  # [batch_size, seq_len, num_attention_heads]
 
         # Add noise for exploration during training
         if self.training and self.moh_noise_std > 0:
             noise = torch.randn_like(head_scores) * self.moh_noise_std
             head_scores = head_scores + noise
 
-        # Select top-k heads
+        # Select top-k heads per token and scatter their mixture weights into a
+        # sparse [batch_size, seq_len, num_attention_heads] tensor
         head_scores = head_scores / self.moh_temperature
         top_k_scores, top_k_indices = torch.topk(head_scores, self.moh_top_k, dim=-1)
-        head_weights = F.softmax(top_k_scores, dim=-1)  # [batch_size, top_k]
+        top_k_weights = F.softmax(top_k_scores, dim=-1)  # [batch_size, seq_len, top_k]
+        head_weights = torch.zeros_like(head_scores).scatter(-1, top_k_indices, top_k_weights)
 
         # Project to Q, K, V
         q = self.q_proj(hidden_states)  # [batch_size, seq_len, num_heads * head_dim]
@@ -953,49 +954,17 @@ class MixtureOfHeadAttention(nn.Module):
         v = self.v_proj(hidden_states)  # [batch_size, seq_len, num_kv_heads * head_dim]
 
         # Reshape for attention
-        q = q.view(batch_size, seq_len, self.num_attention_heads, self.head_dim)
-        k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
-        v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        q = q.view(batch_size, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        # Select only the top-k heads for Q
-        selected_q = torch.gather(
-            q, 2,
-            top_k_indices.unsqueeze(1).unsqueeze(-1).expand(-1, seq_len, -1, self.head_dim)
-        )  # [batch_size, seq_len, top_k, head_dim]
-
-        # Transpose for attention computation
-        selected_q = selected_q.transpose(1, 2)  # [batch_size, top_k, seq_len, head_dim]
-        k = k.transpose(1, 2)  # [batch_size, num_kv_heads, seq_len, head_dim]
-        v = v.transpose(1, 2)  # [batch_size, num_kv_heads, seq_len, head_dim]
-
-        # Expand k, v for grouped attention if needed
+        # Expand k, v for grouped attention: Q head i uses KV head i // num_kv_groups
         if self.num_kv_groups > 1:
-            # For MoH, we need to be careful about which KV heads to use for selected Q heads
-            # Map selected Q heads to their corresponding KV heads
-            selected_kv_indices = top_k_indices // self.num_kv_groups  # [batch_size, top_k]
+            k = k.repeat_interleave(self.num_kv_groups, dim=1)
+            v = v.repeat_interleave(self.num_kv_groups, dim=1)
 
-            # Select corresponding KV heads
-            selected_k = torch.gather(
-                k, 1,
-                selected_kv_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, seq_len, self.head_dim)
-            )  # [batch_size, top_k, seq_len, head_dim]
-            selected_v = torch.gather(
-                v, 1,
-                selected_kv_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, seq_len, self.head_dim)
-            )  # [batch_size, top_k, seq_len, head_dim]
-        else:
-            # If num_kv_heads == num_attention_heads, select directly
-            selected_k = torch.gather(
-                k, 1,
-                top_k_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, seq_len, self.head_dim)
-            )
-            selected_v = torch.gather(
-                v, 1,
-                top_k_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, seq_len, self.head_dim)
-            )
-
-        # Compute attention scores for selected heads only
-        attn_scores = torch.matmul(selected_q, selected_k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        # Since heads are selected per token, compute attention for all heads
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
         # Apply causal mask
         causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=hidden_states.device))
@@ -1013,16 +982,10 @@ class MixtureOfHeadAttention(nn.Module):
         attn_weights = self.dropout(attn_weights)
 
         # Apply attention to values
-        attn_output = torch.matmul(attn_weights, selected_v)  # [batch_size, top_k, seq_len, head_dim]
+        attn_output = torch.matmul(attn_weights, v)  # [batch_size, num_heads, seq_len, head_dim]
 
-        # Apply head weights (mixture weights)
-        attn_output = attn_output * head_weights.unsqueeze(-1).unsqueeze(-1)
-
-        # Transpose and reshape for proper aggregation
-        attn_output = attn_output.transpose(1, 2)  # [batch_size, seq_len, top_k, head_dim]
-
-        # Sum over selected heads and flatten the head dimension
-        attn_output = attn_output.sum(dim=2)  # [batch_size, seq_len, head_dim]
+        # Combine heads with per-token sparse mixture weights (unselected heads get 0)
+        attn_output = torch.einsum('bhld,blh->bld', attn_output, head_weights)  # [batch_size, seq_len, head_dim]
 
         # The result should be [batch_size, seq_len, head_dim * top_k] but we want [batch_size, seq_len, hidden_size]
         # We need to carefully handle the output projection to map from reduced dimensions to full hidden_size

@@ -1,11 +1,28 @@
 [build-system]
 requires = ["setuptools", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "guac"
 version = "0.1.0"
 requires-python = ">=3.8"
+dependencies = [
+    "torch",
+    "transformers==4.46.3",
+    "datasets",
+    "tokenizers",
+    "sentencepiece",
+    "pyyaml",
+    "jinja2",
+    "numpy",
+    "pandas",
+    "numba",
+    "tqdm",
+    "psutil",
+    "wandb",
+    "peft",
+    "trl>=0.12,<0.13",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

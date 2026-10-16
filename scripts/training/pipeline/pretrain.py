@@ -60,9 +60,9 @@ def load_tokenizer(config: Dict[str, Any]) -> Any:
 
     tokenizer_path = config.get('tokenizer_model_path', default_tokenizer)
 
-    # Remove .model extension if present to get directory
+    # Take the containing directory if a .model file path was given
     if tokenizer_path.endswith('.model'):
-        tokenizer_path = tokenizer_path.replace('.model', '')
+        tokenizer_path = os.path.dirname(tokenizer_path)
 
     if not os.path.exists(tokenizer_path):
         vocab_size = config.get('vocab_size', 60000)
@@ -427,12 +427,12 @@ def create_model(config: Dict[str, Any], tokenizer: Any, print_params: bool = Fa
     return model
 
 
-def create_training_arguments(config: Dict[str, Any], output_dir: str) -> TrainingArguments:
+def create_training_arguments(config: Dict[str, Any], output_dir: str, max_steps: int = 1000) -> TrainingArguments:
     """Create training arguments from config."""
     return TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=config.get('num_train_epochs', 1),
-        max_steps=1000,
+        max_steps=max_steps,
         per_device_train_batch_size=min(config.get('pdbs_train', 16), 8),
         per_device_eval_batch_size=min(config.get('pdbs_eval', 16), 8),
         gradient_accumulation_steps=max(config.get('grad_accum_steps', 6), 4),
@@ -498,6 +498,8 @@ def main():
                        help='Print detailed parameter breakdown')
     parser.add_argument('--debug', action='store_true',
                        help='Enable debug mode with smaller dataset')
+    parser.add_argument('--max-steps', type=int, default=None,
+                       help='Override the training step budget (default: 1000, or 20 with --debug)')
 
     args = parser.parse_args()
 
@@ -530,20 +532,14 @@ def main():
     max_length = max(max_length, 128)
     print(f"Sequence length: {max_length}")
 
-    is_streaming = hasattr(dataset, 'iter') and not hasattr(dataset, 'select')
+    dataset_key = "_".join(sorted(dataset_names))
+    vocab_size = get_vocab_size(tokenizer)
+    cache_key = f"{dataset_key}_vocab{vocab_size}_len{max_length}"
+    cache_dir = get_cache_directory("pretraining", cache_key)
 
-    if is_streaming:
-        dataset_key = "_".join(sorted(dataset_names))
-        vocab_size = get_vocab_size(tokenizer)
-        cache_key = f"{dataset_key}_vocab{vocab_size}_len{max_length}"
-        cache_dir = get_cache_directory("pretraining", cache_key)
-
-        tokenized_dataset = tokenize_dataset_with_cache(
-            dataset, tokenizer, cache_dir, max_length, args.force_retokenize
-        )
-    else:
-        tokenized_dataset = tokenize_dataset(dataset, tokenizer, max_length,
-                                            dataset_names, args.force_retokenize)
+    tokenized_dataset = tokenize_dataset_with_cache(
+        dataset, tokenizer, cache_dir, max_length, args.force_retokenize
+    )
 
     train_dataset = tokenized_dataset
 
@@ -551,7 +547,13 @@ def main():
 
     output_dir = get_output_directory("pretraining", args.model_config, args.output_dir)
 
-    training_args = create_training_arguments(config, output_dir)
+    if args.max_steps is not None:
+        max_steps = args.max_steps
+    elif args.debug:
+        max_steps = 20
+    else:
+        max_steps = 1000
+    training_args = create_training_arguments(config, output_dir, max_steps)
     callbacks = create_callbacks(config, tokenizer, args.enable_profiling, args.print_mem, train_dataset)
 
     data_collator = DataCollatorForLanguageModeling(
