@@ -33,7 +33,7 @@ class PathManager:
             config_path: Optional path to site_config.yml. If None, uses default location.
         """
         self.project_root = Path(__file__).parent.parent.parent
-        self.config_path = config_path or (self.project_root / "site_config.yml")
+        self.config_path = Path(config_path) if config_path else self.project_root / "site_config.yml"
         self._config = None
         self._directories = None
 

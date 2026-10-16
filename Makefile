@@ -44,8 +44,9 @@ help:
 	@echo ""
 	@echo "=== Pipeline Variables ==="
 	@echo "  VOCAB_SIZE=60000 - Vocabulary size for tokenizer training"
-	@echo "  TOKENIZER_PATH=  - Path to tokenizer for dataset tokenization"
-	@echo "  MAX_LENGTH=1024  - Maximum sequence length for tokenization"
+	@echo "  TOKENIZER_TYPE=sentencepiece - Tokenizer to train (sentencepiece, bpe)"
+	@echo "  TOKENIZER_PATH=  - Tokenizer for tokenize-datasets and pretrain (default: CONFIG's)"
+	@echo "  MAX_LENGTH=      - Sequence length for tokenize-datasets and pretrain (default: CONFIG's)"
 	@echo "  CONFIG=guac-3b      - Model config (guac-3b, guac-1.7b, guac-910m, guac-430m, guac-160m, etc.)"
 	@echo "  TASK=arithmetic  - Mid-training task (arithmetic, code, reasoning, custom)"
 	@echo "  MODE=instruction - Post-training mode (instruction, sft)"
@@ -64,7 +65,8 @@ MODE ?= instruction
 DEBUG ?= false
 TEMPLATES ?= --no-templates
 VOCAB_SIZE ?= 60000
-MAX_LENGTH ?= 1024
+TOKENIZER_TYPE ?= sentencepiece
+MAX_LENGTH ?=
 TOKENIZER_PATH ?=
 FORCE_RETOKENIZE ?= false
 PRETRAIN_ARGS ?=
@@ -75,8 +77,8 @@ MAX_STEPS ?=
 DOWNLOAD_CSV ?= datasets_download.csv
 DOWNLOAD_OUTPUT ?= $(SCRATCH_DIR)/datasets/downloaded
 
-# Pipeline directories - using path manager structure
-SCRATCH_DIR ?= ./scratch
+# Pipeline directories - site_config.yml's scratch_dir, where the scripts write by default
+SCRATCH_DIR ?= $(shell python -c "from guac.core.path_manager import get_scratch_dir; print(get_scratch_dir())" 2>/dev/null || echo ./scratch)
 MODEL_DIR = $(SCRATCH_DIR)/models
 PRETRAIN_DIR = $(MODEL_DIR)/pretraining/$(CONFIG)
 MIDTRAIN_DIR = $(MODEL_DIR)/midtraining/$(CONFIG)_$(TASK)
@@ -87,6 +89,8 @@ DEBUG_FLAG = $(if $(filter true,$(DEBUG)),--debug,)
 PROFILING_FLAG = $(if $(filter true,$(ENABLE_PROFILING)),--enable-profiling,)
 RETOKENIZE_FLAG = $(if $(filter true,$(FORCE_RETOKENIZE)),--force-retokenize,)
 MAX_STEPS_FLAG = $(if $(MAX_STEPS),--max-steps $(MAX_STEPS),)
+# The same tokenizer and length for tokenize-datasets and pretrain, so pretrain finds the cache
+DATA_FLAGS = $(if $(TOKENIZER_PATH),--tokenizer $(TOKENIZER_PATH),) $(if $(MAX_LENGTH),--max-length $(MAX_LENGTH),)
 
 # Installation and setup
 install:
@@ -103,27 +107,21 @@ install:
 # Train a new tokenizer on specified datasets
 train-tokenizer:
 	@echo "🔤 Training tokenizer..."
-	@echo "📊 Vocab size: $(VOCAB_SIZE) | Datasets: $(DATASETS)"
+	@echo "📊 Vocab size: $(VOCAB_SIZE) | Type: $(TOKENIZER_TYPE) | Datasets: $(DATASETS)"
 	TOKENIZERS_PARALLELISM=false python guac/pipeline/train_tokenizer.py \
 		--vocab-size $(VOCAB_SIZE) \
+		--tokenizer-type $(TOKENIZER_TYPE) \
 		--datasets $(DATASETS)
 	@echo "✅ Tokenizer training complete"
 
 # Pre-tokenize and cache datasets for training
 tokenize-datasets:
 	@echo "📦 Pre-tokenizing datasets..."
-	@echo "📊 Tokenizer: $(TOKENIZER_PATH) | Datasets: $(DATASETS) | Max length: $(MAX_LENGTH)"
-	@if [ -z "$(TOKENIZER_PATH)" ]; then \
-		echo "❌ TOKENIZER_PATH not set!"; \
-		echo "Please specify tokenizer path:"; \
-		echo "  make tokenize-datasets TOKENIZER_PATH=scratch/tokenizers/sentencepiece/shared_60k"; \
-		exit 1; \
-	fi
+	@echo "📊 Config: $(CONFIG) | Datasets: $(DATASETS)"
 	TOKENIZERS_PARALLELISM=false python guac/pipeline/tokenize_datasets.py \
-		--tokenizer $(TOKENIZER_PATH) \
+		--model-config $(CONFIG) \
 		--datasets $(DATASETS) \
-		--max-length $(MAX_LENGTH) \
-		$(RETOKENIZE_FLAG)
+		$(DATA_FLAGS) $(DEBUG_FLAG) $(RETOKENIZE_FLAG)
 	@echo "✅ Dataset tokenization complete"
 
 # ============================================================================
@@ -147,7 +145,7 @@ pretrain:
 		--model-config $(CONFIG) \
 		--datasets $(DATASETS) \
 		--output-dir $(PRETRAIN_DIR) \
-		$(DEBUG_FLAG) $(PROFILING_FLAG) $(RETOKENIZE_FLAG) $(MAX_STEPS_FLAG) $(PRETRAIN_ARGS)
+		$(DATA_FLAGS) $(DEBUG_FLAG) $(PROFILING_FLAG) $(RETOKENIZE_FLAG) $(MAX_STEPS_FLAG) $(PRETRAIN_ARGS)
 	@echo "✅ Pre-training complete: $(PRETRAIN_DIR)"
 
 # Stage 2: Mid-training (task specialization)
@@ -341,7 +339,8 @@ clean-cache:
 # Show cached dataset information
 cache:
 	@echo "📦 Cached datasets:"
-	@ls -la ./tokenized_* ./tokenized_cache_* 2>/dev/null || echo "  No cached datasets found"
+	@ls -d $(SCRATCH_DIR)/tokenized_datasets/*/tokenized_cache_* 2>/dev/null | while read dir; do \
+		echo "  $$(du -sh "$$dir" | cut -f1)	$$dir"; done | grep . || echo "  No cached datasets found"
 	@echo ""
 	@echo "💡 To force re-tokenization, use FORCE_RETOKENIZE=true"
 	@echo "💡 Example: make pipeline FORCE_RETOKENIZE=true"
@@ -380,9 +379,9 @@ examples:
 	@echo "  make train-tokenizer DATASETS=wikitext-103    # Different dataset"
 	@echo ""
 	@echo "📦 Dataset Tokenization:"
-	@echo "  make tokenize-datasets TOKENIZER_PATH=scratch/tokenizers/sentencepiece/shared_60k"
-	@echo "  make tokenize-datasets TOKENIZER_PATH=./my_tokenizer DATASETS=wikitext-103"
+	@echo "  make tokenize-datasets CONFIG=guac-430m DATASETS=wikitext-103   # CONFIG's tokenizer and length"
 	@echo "  make tokenize-datasets TOKENIZER_PATH=./my_tokenizer MAX_LENGTH=2048"
+	@echo "  (pass the same TOKENIZER_PATH / MAX_LENGTH to make pretrain so it finds the cache)"
 	@echo ""
 	@echo "📊 Standard Training:"
 	@echo "  make pipeline                # Default: guac-3b + arithmetic + instruction"
@@ -403,7 +402,9 @@ examples:
 configs:
 	@echo "📋 Available model configurations:"
 	@echo "=================================="
-	@grep -A 1 "^  [a-z]" model_configs.yaml | grep -v "^--" | head -20 || echo "Could not read model_configs.yaml"
+	@python -c "import yaml; c = yaml.safe_load(open('model_configs.yaml'))['model_training_configs']; \
+		[print(f\"  {n:16} {m.get('hidden_size', '?'):>5} hidden, {m.get('num_hidden_layers', '?'):>3} layers\") for n, m in c.items()]" \
+		|| echo "Could not read model_configs.yaml"
 	@echo ""
 	@echo "💡 Use any config name with: make pipeline CONFIG=<name>"
 
@@ -506,7 +507,7 @@ download-pretraining-datasets:
 		exit 1; \
 	fi
 	@failed=0; \
-	for dataset in fineweb fineweb-edu wikitext-103; do \
+	for dataset in $$(python -c "from guac.core.path_manager import PathManager; print(' '.join(PathManager('$(SITE_CONFIG_PATH)').get_dataset_configs().get('pretraining_datasets', {})))"); do \
 		echo "⬇️  Downloading $$dataset..."; \
 		if python scripts/hf_partial_download.py --from-site-config $$dataset --output "$(DOWNLOAD_OUTPUT)" --site-config-path "$(SITE_CONFIG_PATH)"; then \
 			echo "✅ Successfully downloaded $$dataset"; \
@@ -521,14 +522,15 @@ download-pretraining-datasets:
 		echo "📁 Downloaded to: $(DOWNLOAD_OUTPUT)"; \
 	else \
 		echo "⚠️  $$failed dataset(s) failed to download"; \
+		exit 1; \
 	fi
 
 # Download specific dataset from site config
 download-from-site-config:
 	@if [ -z "$(DATASET)" ]; then \
 		echo "❌ Please specify dataset: make download-from-site-config DATASET=fineweb"; \
-		echo "Available pretraining datasets: fineweb, fineweb-edu, finewiki, wikitext-103, c4, openwebtext"; \
-		echo "Available instruction datasets: openorca, alpaca, ultrachat"; \
+		python -c "from guac.core.path_manager import PathManager; \
+			[print(f'Available {kind}: ' + ', '.join(names)) for kind, names in PathManager('$(SITE_CONFIG_PATH)').get_dataset_configs().items()]"; \
 		exit 1; \
 	fi
 	@echo "📥 Downloading $(DATASET) from site config..."
@@ -545,7 +547,7 @@ download-instruction-datasets:
 		exit 1; \
 	fi
 	@failed=0; \
-	for dataset in openorca; do \
+	for dataset in $$(python -c "from guac.core.path_manager import PathManager; print(' '.join(PathManager('$(SITE_CONFIG_PATH)').get_dataset_configs().get('instruction_datasets', {})))"); do \
 		echo "⬇️  Downloading $$dataset..."; \
 		if python scripts/hf_partial_download.py --from-site-config $$dataset --dataset-type instruction_datasets --output "$(DOWNLOAD_OUTPUT)" --site-config-path "$(SITE_CONFIG_PATH)"; then \
 			echo "✅ Successfully downloaded $$dataset"; \
@@ -560,6 +562,7 @@ download-instruction-datasets:
 		echo "📁 Downloaded to: $(DOWNLOAD_OUTPUT)"; \
 	else \
 		echo "⚠️  $$failed dataset(s) failed to download"; \
+		exit 1; \
 	fi
 
 # Show available dataset download commands
