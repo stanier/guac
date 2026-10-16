@@ -64,3 +64,9 @@ def test_build_model_config_passes_layer_type_settings_through():
     assert model_config.based_chunk_size == 16
     assert model_config.conv_kernel_size == 5
     assert model_config.sliding_window_size == 128
+
+
+def test_preset_numbers_in_scientific_notation_are_numbers():
+    """PyYAML reads 8e-4 as a string; presets must still give floats."""
+    config = load_model_config('guac-3b')
+    assert isinstance(config['learning_rate'], float)

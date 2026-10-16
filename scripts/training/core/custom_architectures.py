@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Custom architecture implementations for Guac training.
+The mixed-layer model: MixedLayerConfig, the mixers for each layer type, the
+shared block (MixedTransformerLayer), and MixedLayerForCausalLM.
 
-This module provides custom model architectures that can be used alongside
-standard transformers architectures.
+Mamba-2's scan lives in mamba2.py and BASED's in linear_attention.py.
 """
 
 import torch
@@ -15,7 +15,7 @@ from transformers.generation.utils import GenerationMixin
 from typing import Optional, Tuple, Union, List, Dict, Any
 
 from .linear_attention import causal_linear_attention, taylor_feature_map
-from .mamba2 import Mamba2Mixer, causal_conv1d
+from .mamba2 import Mamba2Mixer, autocast_disabled, causal_conv1d
 
 
 SUPPORTED_LAYER_TYPES = (
@@ -863,7 +863,7 @@ class BasedMixer(nn.Module):
 
         # The feature map squares its inputs and the scan sums over the sequence, so run both in float32
         compute_dtype = torch.promote_types(v.dtype, torch.float32)
-        with torch.autocast(device_type=hidden_states.device.type, enabled=False):
+        with autocast_disabled(hidden_states.device.type):
             q = taylor_feature_map(q.to(compute_dtype))
             k = taylor_feature_map(k.to(compute_dtype))
             v = v.to(compute_dtype)
@@ -1264,6 +1264,82 @@ def block_parameter_counts(config) -> List[int]:
     with torch.device("meta"):
         return [sum(p.numel() for p in MixedTransformerLayer(config, i).parameters())
                 for i in range(config.num_hidden_layers)]
+
+
+def mixer_flops_per_token(config, layer_type: str, seq_len: int) -> float:
+    """
+    Forward FLOPs per token of one mixer on a sequence of seq_len tokens.
+
+    Counted by torch's FlopCounterMode (matrix multiplies, convolutions and
+    attention; elementwise work is left out) on the meta device, so it costs
+    no memory. Attention's share grows with seq_len.
+    """
+    from torch.utils.flop_counter import FlopCounterMode
+
+    mixer_class = MIXERS[layer_type]
+    if mixer_class is None:
+        return 0.0
+    with torch.device("meta"):
+        mixer = mixer_class(config)
+        hidden_states = torch.empty(1, seq_len, config.hidden_size)
+    with FlopCounterMode(display=False) as counter:
+        mixer(hidden_states)
+    return counter.get_total_flops() / seq_len
+
+
+def ffn_flops_per_token(config, layer_idx: int) -> float:
+    """Forward FLOPs per token of a layer's FFN; for MoE, the router plus the experts each token runs."""
+    hidden, ffn_type = config.hidden_size, config.ffn_types[layer_idx]
+    if ffn_type == "swiglu":
+        return 6.0 * hidden * config.ffn_hidden_sizes[layer_idx]
+    if ffn_type == "moe":
+        expert = 6.0 * hidden * swiglu_hidden_size(config.intermediate_size)
+        router = 2.0 * hidden * config.num_experts if config.num_experts > 0 else 0.0
+        active = config.num_shared_experts + (config.moe_top_k if config.num_experts > 0 else 0)
+        return router + active * expert
+    return 0.0
+
+
+def block_flops_per_token(config, seq_len: int) -> List[float]:
+    """Forward FLOPs per token of each block (mixer plus FFN) at sequence length seq_len."""
+    mixer_flops = {t: mixer_flops_per_token(config, t, seq_len) for t in set(config.layer_types)}
+    return [mixer_flops[t] + ffn_flops_per_token(config, i) for i, t in enumerate(config.layer_types)]
+
+
+def model_flops_per_token(config, seq_len: int) -> float:
+    """Forward FLOPs per token of the whole model: every block plus the output projection."""
+    return sum(block_flops_per_token(config, seq_len)) + 2.0 * config.hidden_size * config.vocab_size
+
+
+def flop_matched_ffn_hidden_sizes(config, reference_layer_type: str = "full_attention",
+                                  seq_len: int = 1024) -> List[int]:
+    """
+    Per-layer SwiGLU widths that give every block about the same forward FLOPs
+    per token at seq_len as a reference_layer_type block with the default width
+    (the compute counterpart of param_matched_ffn_hidden_sizes). Layers whose FFN
+    is MoE or none keep their width. Pass the result as ffn_hidden_sizes.
+
+    Raises ValueError if a layer's mixer alone costs more than the target.
+    """
+    if reference_layer_type not in MIXERS:
+        raise ValueError(f"Unknown reference layer type {reference_layer_type!r}. "
+                         f"Supported types: {list(SUPPORTED_LAYER_TYPES)}")
+    flops_per_unit = 6.0 * config.hidden_size  # one unit of SwiGLU width
+    mixer_flops = {t: mixer_flops_per_token(config, t, seq_len)
+                   for t in set(config.layer_types) | {reference_layer_type}}
+    target = mixer_flops[reference_layer_type] + flops_per_unit * swiglu_hidden_size(config.intermediate_size)
+
+    sizes = []
+    for i, (layer_type, ffn_type) in enumerate(zip(config.layer_types, config.ffn_types)):
+        if ffn_type != "swiglu":
+            sizes.append(config.ffn_hidden_sizes[i])
+            continue
+        width = round((target - mixer_flops[layer_type]) / flops_per_unit)
+        if width < 1:
+            raise ValueError(f"Layer {i} ({layer_type}) costs more FLOPs without its FFN than a whole "
+                             f"{reference_layer_type} block at seq_len {seq_len}, so no FFN width can match it")
+        sizes.append(width)
+    return sizes
 
 
 class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):

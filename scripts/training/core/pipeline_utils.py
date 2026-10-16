@@ -25,12 +25,35 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 project_root = Path(__file__).parent.parent.parent.parent
 
 
+def as_number(value: Any) -> Any:
+    """
+    value, with a string that spells a number converted to it. PyYAML follows
+    YAML 1.1, which reads 3e-3 (no decimal point) as a string.
+    """
+    if isinstance(value, str):
+        for convert in (int, float):
+            try:
+                return convert(value)
+            except ValueError:
+                pass
+    return value
+
+
+def numbers_in(value: Any) -> Any:
+    """value with every numeric string inside it (in nested dicts and lists too) converted by as_number."""
+    if isinstance(value, dict):
+        return {key: numbers_in(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [numbers_in(item) for item in value]
+    return as_number(value)
+
+
 def load_model_config(config_name: str) -> Dict[str, Any]:
     """Load a model_configs.yaml preset, merged over the defaults. Former preset names still resolve."""
     config_path = project_root / "model_configs.yaml"
 
     with open(config_path, 'r') as f:
-        configs = yaml.safe_load(f)
+        configs = numbers_in(yaml.safe_load(f))
 
     aliases = configs.get('preset_aliases') or {}
     if config_name in aliases:

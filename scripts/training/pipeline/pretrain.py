@@ -28,14 +28,14 @@ from datasets import load_dataset, load_from_disk, concatenate_datasets, Iterabl
 
 try:
     from scripts.training.core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
-    from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes
+    from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes, flop_matched_ffn_hidden_sizes
     from scripts.training.core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, write_run_info
     from scripts.training.core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
     from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
 except ImportError:
     try:
         from ..core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
-        from ..core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes
+        from ..core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes, flop_matched_ffn_hidden_sizes
         from ..core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, write_run_info
         from ..core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
         from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
@@ -43,7 +43,7 @@ except ImportError:
         parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         sys.path.insert(0, parent_dir)
         from core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
-        from core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes
+        from core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes, flop_matched_ffn_hidden_sizes
         from core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, write_run_info
         from core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
         from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
@@ -431,6 +431,7 @@ def build_model_config(config: Dict[str, Any], vocab_size: int) -> MixedLayerCon
 
     With `param_match: <layer type>` (or `true` for full_attention), every SwiGLU
     layer's FFN width is set so its block has the parameters of a block of that type.
+    `flop_match` does the same for forward FLOPs per token at max_sequence_length.
     """
     model_config = MixedLayerConfig(
         vocab_size=vocab_size,
@@ -448,12 +449,16 @@ def build_model_config(config: Dict[str, Any], vocab_size: int) -> MixedLayerCon
         ffn_hidden_sizes=config.get('ffn_hidden_sizes'),
         **{k: v for k, v in config.items() if k.startswith(MODEL_SETTING_PREFIXES)}
     )
-    param_match = config.get('param_match')
+    param_match, flop_match = config.get('param_match'), config.get('flop_match')
+    if sum(bool(x) for x in (param_match, flop_match, config.get('ffn_hidden_sizes') is not None)) > 1:
+        raise ValueError("Set at most one of param_match, flop_match and ffn_hidden_sizes")
     if param_match:
-        if config.get('ffn_hidden_sizes') is not None:
-            raise ValueError("Set either param_match or ffn_hidden_sizes, not both")
         reference = 'full_attention' if param_match is True else param_match
         model_config.ffn_hidden_sizes = param_matched_ffn_hidden_sizes(model_config, reference)
+    if flop_match:
+        reference = 'full_attention' if flop_match is True else flop_match
+        model_config.ffn_hidden_sizes = flop_matched_ffn_hidden_sizes(
+            model_config, reference, config.get('max_sequence_length', 1024))
     return model_config
 
 
@@ -540,7 +545,7 @@ def print_training_settings(training_args: TrainingArguments, max_length: int, t
 def create_callbacks(config: Dict[str, Any], tokenizer: Any, enable_profiling: bool = False,
                      enable_memory_profiling: bool = False, tokenized_dataset: Any = None) -> List[Any]:
     """Create training callbacks."""
-    callbacks = [CustomProgressCallback(tokenizer, config.get('step_val', 100))]
+    callbacks = [CustomProgressCallback(tokenizer, config.get('sample_every', 200))]
 
     if enable_memory_profiling:
         callbacks.append(MemoryUsageCallback(config=config, tokenized_dataset=tokenized_dataset))

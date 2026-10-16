@@ -7,7 +7,7 @@
 	pipeline-code pipeline-reasoning pipeline-guac-3b pipeline-guac-1.7b pipeline-guac-910m pipeline-guac-430m \
 	configs arch download-datasets download-datasets-from download-pretraining-datasets \
 	download-instruction-datasets download-from-site-config download-help train-tokenizer \
-	tokenize-datasets
+	tokenize-datasets diagnostics sweep
 
 # Default target
 help:
@@ -30,6 +30,8 @@ help:
 	@echo "  make train      - Standard training with mixed architecture"
 	@echo "  make arithmetic - Train arithmetic-specific model (now mid-training task)"
 	@echo "  make eval-arithmetic - Exact-match arithmetic accuracy (MODEL=dir, default: mid-trained model)"
+	@echo "  make diagnostics DIAG_TASK=mqar LAYERS=conv,based - Train a small model on a synthetic diagnostic"
+	@echo "  make sweep SPEC=sweeps/recall_small.yaml - Layer-type sweep at a matched budget, one results table"
 	@echo ""
 	@echo "=== Utilities ==="
 	@echo "  make test       - Run all tests to verify setup"
@@ -261,6 +263,18 @@ eval-arithmetic:
 	python scripts/training/pipeline/eval_arithmetic.py \
 		--model $(or $(MODEL),$(MIDTRAIN_DIR)) \
 		--num-per-category $(EVAL_N)
+
+# Synthetic diagnostics (MQAR, selective copying, induction, passkey) on a small model trained from scratch
+DIAG_TASK ?= mqar
+LAYERS ?= full_attention,full_attention
+DIAG_ARGS ?=
+diagnostics:
+	python scripts/training/pipeline/run_diagnostics.py --task $(DIAG_TASK) --layer-types $(LAYERS) $(DIAG_ARGS)
+
+# Layer-type sweep from a spec (see sweeps/README.md)
+SPEC ?= sweeps/recall_small.yaml
+sweep:
+	python scripts/training/pipeline/sweep.py $(SPEC) $(SWEEP_ARGS)
 
 # Test installation and basic functionality
 test:

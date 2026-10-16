@@ -1,0 +1,41 @@
+# A small, CPU-friendly sweep: recall and induction across mixer types at a
+# matched parameter budget. Each run takes about a minute on a laptop CPU.
+#   python scripts/training/pipeline/sweep.py sweeps/recall_small.yaml --dry-run
+#   python scripts/training/pipeline/sweep.py sweeps/recall_small.yaml
+name: recall-small
+
+base:
+  hidden_size: 64
+  num_attention_heads: 4
+  intermediate_size: 256
+  sliding_window_size: 16
+  mamba_d_state: 16
+  mamba_headdim: 16
+  based_feature_dim: 8
+
+# Every block gets an FFN sized so the block has a full_attention block's parameters
+budget:
+  param_match: full_attention
+
+architectures:
+  attention: [full_attention, full_attention]
+  sliding_window: [sliding_window_attention, sliding_window_attention]
+  conv: [conv, conv]
+  mamba2: [mamba2, mamba2]
+  based: [based, based]
+  based_hybrid: [based, sliding_window_attention]
+  mamba2_attention: [mamba2, full_attention]
+
+tasks:
+  - task: mqar
+    args: {num_kv_pairs: 8, seq_len: 64, vocab_size: 128}
+    steps: 3000
+    learning_rate: 3e-3
+  - task: induction
+    args: {seq_len: 64, vocab_size: 32}
+    steps: 1500
+
+seeds: [0]
+train:
+  batch_size: 64
+  learning_rate: 1e-3

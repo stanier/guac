@@ -18,6 +18,7 @@ scan. The kernel computes the same function (test_mamba2.py compares the two
 when a GPU and mamba_ssm are available).
 """
 
+import contextlib
 import math
 from typing import Optional
 
@@ -36,6 +37,13 @@ def load_mamba_ssm_scan():
         raise ImportError("mamba_scan_impl='mamba_ssm' needs the mamba_ssm package (pip install mamba-ssm, "
                           "which needs a CUDA toolchain)") from e
     return mamba_chunk_scan_combined
+
+
+def autocast_disabled(device_type: str):
+    """Turn autocast off, so a block runs in its inputs' dtype. A no-op on the meta device, which autocast rejects."""
+    if device_type == "meta":
+        return contextlib.nullcontext()
+    return torch.autocast(device_type=device_type, enabled=False)
 
 
 def causal_conv1d(x: torch.Tensor, conv: nn.Conv1d, state: Optional[torch.Tensor] = None):
@@ -249,7 +257,7 @@ class Mamba2Mixer(nn.Module):
 
         # The scan's exponentials and cumulative sums need at least float32, even under mixed precision
         scan_dtype = torch.promote_types(x.dtype, torch.float32)
-        with torch.autocast(device_type=hidden_states.device.type, enabled=False):
+        with autocast_disabled(hidden_states.device.type):
             x, b, c = x.to(scan_dtype), b.to(scan_dtype), c.to(scan_dtype)
             dt = F.softplus(dt.to(scan_dtype) + self.dt_bias.to(scan_dtype))
             A = -torch.exp(self.A_log.to(scan_dtype))
