@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Guac is a research framework for training and experimenting with **heterogeneous transformer architectures** — models where different layers use entirely different computational mechanisms (MLP-only, Conv1D, Mamba-2, BASED, Flash Attention, standard attention) stacked together in a single network. The research goal is understanding how mixed layer types interact and what inductive biases they contribute.
 
+**Current work plan:** `docs/ROADMAP.md` has the status, the open decision, the next steps (with file and line pointers), known unfixed issues, and an offline end-to-end smoke test. Read it before starting work, and update it as items land.
+
 ## Commands
 
 **Setup:**
@@ -77,7 +79,7 @@ The core novelty is `MixedLayerConfig` in `scripts/training/core/custom_architec
 
 **`model_configs.yaml`** — Model size presets, named after their approximate parameter count. Sizes range from `guac-106m` (512 hidden, 4 layers) through `guac-3b` (3072 hidden, 24 layers, development default) up to `guac-48b` (8192 hidden, 64 layers). Each preset includes hyperparameters (lr, batch size, warmup ratio).
 
-**`architecture_configs.yaml`** — Architecture definitions (`mixed_layer`, `basic_transformer`, `llama`, `qwen2`, `granite`). Controls layer type progressions, normalization, initialization ranges.
+**`architecture_configs.yaml`** — Architecture definitions (`mixed_layer`, `basic_transformer`, `llama`, `qwen2`, `granite`). Only read by the legacy scripts in `scripts/legacy/`; the current pipeline builds models from `model_configs.yaml`.
 
 **`site_config.yml`** — Environment-specific paths and dataset configurations (git-ignored; copy from `site_config.example.yml`). Controls `scratch_dir` layout, HuggingFace dataset streaming settings, and which datasets are used per stage.
 
@@ -85,11 +87,10 @@ All output paths (tokenized datasets, checkpoints, models) resolve through `Path
 
 ### Dataset Management
 
-`datasets_download.csv` is a manifest for `hf_partial_download.py`. Supports partial downloads by size (`100MB`, `50K`, `10%`).
+`datasets_download.csv` is a manifest for `scripts/hf_partial_download.py`. Supports partial downloads by size (`100MB`, `50K`, `10%`). The CSV isn't in the repo yet, and the `make download-*` targets call the script at the wrong path (see `docs/ROADMAP.md`).
 
 ```bash
-make download-datasets
-python hf_partial_download.py --csv datasets_download.csv
+python scripts/hf_partial_download.py --csv datasets_download.csv
 ```
 
 ## Testing
