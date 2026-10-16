@@ -241,42 +241,37 @@ layer_types: ["mlp_only", "conv", "full_attention", "mlp_only"]
 - 1-5% for larger models
 - Mixed architectures benefit from longer warmup
 
-## 📈 Monitoring and Evaluation
+## 📈 Data, Evaluation and Run Records
 
-### Training Metrics
+### Pre-training data
 
-**Key Metrics to Watch**:
-- `loss`: Should decrease steadily
-- `grad_norm`: Should be finite and stable
-- `learning_rate`: Should follow schedule
-- Memory usage: Monitor GPU memory
+- **Validation**: every pre-training run holds out a validation set and reports
+  its loss and perplexity every `eval_steps` (default 500) and at the end.
+  wikitext-103 (and on-disk `DatasetDict`s with a `validation` split) use their
+  own validation split. Other datasets hold out `validation_docs` documents each
+  (default 1000; a seeded random sample, or the first documents of a streaming
+  dataset). Set `validation_docs: 0` (or `--validation-docs 0`) to skip evaluation.
+- **Packing** (`pack_sequences`, default on; `--no-pack` to turn off): documents
+  are joined with EOS between them and cut into blocks of exactly
+  `max_sequence_length` tokens, so nothing beyond `max_sequence_length` is thrown
+  away and no batch holds padding. Documents run across block boundaries, and
+  attention isn't reset at EOS (as in GPT-style pre-training). Unpacked, each
+  document is truncated to `max_sequence_length` and the rest discarded.
+- Tokenized splits are cached under keys that cover the tokenizer, dataset
+  settings, sequence length, packing and hold-out size.
+  `make tokenize-datasets` fills the same cache ahead of time.
 
-**Live Inference**: Training scripts show periodic inference examples during training.
+### What every run writes
 
-### Checkpointing
+| File | Contents |
+|------|----------|
+| `metrics.jsonl` | One JSON object per log entry: training loss, perplexity, learning rate and gradient norm every `step_val` steps; validation loss and perplexity (and midtraining's held-out accuracy) at each evaluation |
+| `run_info.json` | Everything needed to reproduce the run: resolved config (preset plus overrides), command line, seed, git commit and whether the tree was dirty, library versions, parameter count, model config |
+| `results.json` | Pre-training only: final training loss, steps, runtime, and final validation loss and perplexity |
 
-**Automatic Checkpointing**:
-- Every `save_steps` (default: 5 × log_steps)
-- Best model based on evaluation loss
-- Final model at training completion
-
-**Manual Checkpointing**:
-```python
-# In training script
-trainer.save_model("/path/to/checkpoint")
-```
-
-### Evaluation
-
-**During Training**:
-- Validation loss (if validation set available)
-- Live inference examples
-- Gradient norms and learning rate
-
-**Post-Training**:
-- Perplexity on held-out data
-- Task-specific evaluations
-- Generation quality assessment
+Set `report_to: wandb` (or `--report-to wandb`) to also send metrics to
+Weights & Biases. `seed` (default 42; `--seed`) seeds model initialization as
+well as data order. Checkpoints are written every `save_steps` (default 1000).
 
 ## 🛠️ Troubleshooting
 

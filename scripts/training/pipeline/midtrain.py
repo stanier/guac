@@ -39,7 +39,8 @@ try:
     from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
     from scripts.training.core.pipeline_utils import (
         load_base_model, create_standard_data_collator, get_output_directory,
-        run_training_loop, apply_debug_mode, save_trained_model
+        run_training_loop, apply_debug_mode, save_trained_model,
+        GuacTrainer, MetricsLoggerCallback, write_run_info
     )
 except ImportError:
     try:
@@ -51,7 +52,8 @@ except ImportError:
         from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
         from ..core.pipeline_utils import (
             load_base_model, create_standard_data_collator, get_output_directory,
-            run_training_loop, apply_debug_mode, save_trained_model
+            run_training_loop, apply_debug_mode, save_trained_model,
+            GuacTrainer, MetricsLoggerCallback, write_run_info
         )
     except ImportError:
         parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -64,7 +66,8 @@ except ImportError:
         from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
         from core.pipeline_utils import (
             load_base_model, create_standard_data_collator, get_output_directory,
-            run_training_loop, apply_debug_mode, save_trained_model
+            run_training_loop, apply_debug_mode, save_trained_model,
+            GuacTrainer, MetricsLoggerCallback, write_run_info
         )
 
 
@@ -308,7 +311,8 @@ def create_midtraining_arguments(output_dir: str, learning_rate: float = 1e-5, n
                                  max_steps: int = -1, batch_size: int = 8, grad_accum: int = 4,
                                  weight_decay: float = 0.001, warmup_ratio: float = 0.1,
                                  eval_steps: int = 250, save_steps: Optional[int] = None,
-                                 best_metric: str = "eval_loss") -> TrainingArguments:
+                                 best_metric: str = "eval_loss", seed: int = 42,
+                                 report_to: str = "none") -> TrainingArguments:
     """Create training arguments optimized for mid-training."""
     save_steps = save_steps or eval_steps * 2
     if save_steps % eval_steps:
@@ -336,8 +340,8 @@ def create_midtraining_arguments(output_dir: str, learning_rate: float = 1e-5, n
         load_best_model_at_end=True,
         metric_for_best_model=best_metric,
         greater_is_better=best_metric != "eval_loss",
-        report_to=[],
-        seed=42,
+        report_to=[] if report_to == "none" else report_to,
+        seed=seed,
     )
 
 
@@ -385,6 +389,10 @@ def main():
                        help='Checkpoint every N steps (default: 2x --eval-steps; must be a multiple of it)')
     parser.add_argument('--early-stopping-patience', type=int, default=2,
                        help='Evaluations without improvement before stopping (0 disables)')
+    parser.add_argument('--seed', type=int, default=42,
+                       help='Seed for data order and dropout')
+    parser.add_argument('--report-to', type=str, default='none',
+                       help='Also log to this tracker, e.g. wandb (metrics.jsonl is always written)')
 
     # Arithmetic task options
     parser.add_argument('--reverse-answers', action='store_true',
@@ -431,6 +439,7 @@ def main():
         batch_size=args.batch_size, grad_accum=args.grad_accum, weight_decay=args.weight_decay,
         warmup_ratio=args.warmup_ratio, eval_steps=args.eval_steps, save_steps=args.save_steps,
         best_metric="eval_heldout_accuracy" if track_accuracy else "eval_loss",
+        seed=args.seed, report_to=args.report_to,
     )
 
     callbacks = [CustomProgressCallback(tokenizer, 50)]
@@ -444,6 +453,7 @@ def main():
 
     if args.enable_profiling:
         callbacks.append(ProfilingCallback(log_every_n_steps=25))
+    callbacks.append(MetricsLoggerCallback(os.path.join(output_dir, 'metrics.jsonl')))
 
     if 'labels' in train_dataset.column_names:
         # Pads labels with -100 so masked prompt tokens stay masked
@@ -452,7 +462,7 @@ def main():
     else:
         data_collator = create_standard_data_collator(training_args, tokenizer)
 
-    trainer = Trainer(
+    trainer = GuacTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -460,6 +470,8 @@ def main():
         data_collator=data_collator,
         callbacks=callbacks,
     )
+
+    write_run_info(output_dir, 'midtraining', vars(args), model=model, seed=args.seed, base_model=args.base_model)
 
     print(f"Starting {args.task} specialization...")
     print(f"Base model: {args.base_model}")

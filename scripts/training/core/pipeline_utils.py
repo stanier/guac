@@ -6,12 +6,17 @@ This module contains common functions used across pretrain, midtrain, and posttr
 to reduce code duplication and maintain consistency.
 """
 
+import json
+import math
 import os
+import subprocess
+import sys
+import time
 import yaml
 import torch
 from typing import Dict, Any, List, Optional
 from pathlib import Path
-from transformers import TrainingArguments, EarlyStoppingCallback
+from transformers import Trainer, TrainerCallback, TrainingArguments, EarlyStoppingCallback
 
 # Disable tokenizer parallelism warnings
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -373,18 +378,11 @@ def get_output_directory(
         return default_dir
 
 
-def run_training_loop(trainer: Any, resume_checkpoint: Optional[str] = None) -> None:
+def run_training_loop(trainer: Any, resume_checkpoint: Optional[str] = None) -> Any:
     """
-    Run training loop with optional checkpoint resumption.
-
-    Args:
-        trainer: HuggingFace Trainer instance
-        resume_checkpoint: Optional path to checkpoint to resume from
+    Run training, resuming from resume_checkpoint if given. Returns trainer.train()'s TrainOutput.
     """
-    if resume_checkpoint:
-        trainer.train(resume_from_checkpoint=resume_checkpoint)
-    else:
-        trainer.train()
+    return trainer.train(resume_from_checkpoint=resume_checkpoint)
 
 
 def apply_debug_mode(dataset: Any, max_samples: int = 1000) -> Any:
@@ -422,3 +420,88 @@ def save_trained_model(
 
     if save_config and hasattr(trainer.model, 'config'):
         trainer.model.config.save_pretrained(output_dir)
+
+# ---------------------------------------------------------------------------
+# Run records: metrics, perplexity and the settings needed to reproduce a run
+# ---------------------------------------------------------------------------
+
+
+class GuacTrainer(Trainer):
+    """Trainer that adds perplexity (exp of the loss) next to every logged loss."""
+
+    def log(self, logs: Dict[str, float], *args, **kwargs) -> None:
+        for key in ('loss', 'eval_loss'):
+            if key in logs:
+                # Capped so a diverged run logs a large number rather than overflowing
+                logs[key.replace('loss', 'perplexity')] = math.exp(min(logs[key], 50.0))
+        super().log(logs, *args, **kwargs)
+
+
+class MetricsLoggerCallback(TrainerCallback):
+    """
+    Appends training logs and evaluation results to a JSONL file, one object per line.
+
+    Evaluation results are written from on_evaluate rather than on_log, so they
+    include metrics that callbacks listed before this one add during evaluation
+    (such as midtraining's held-out accuracy).
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+
+    def write(self, state, values):
+        if not values or not state.is_world_process_zero:
+            return
+        entry = {'step': state.global_step, 'epoch': state.epoch, 'time': time.time(), **values}
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+        with open(self.path, 'a') as f:
+            f.write(json.dumps(entry, default=float) + '\n')
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs and not any(key.startswith('eval_') for key in logs):
+            self.write(state, logs)
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        self.write(state, metrics)
+
+
+def git_state() -> Dict[str, Any]:
+    """The checked-out commit and whether the working tree has uncommitted changes."""
+    def git(*args):
+        result = subprocess.run(['git', *args], cwd=project_root, capture_output=True, text=True)
+        return result.stdout.strip() if result.returncode == 0 else None
+    status = git('status', '--porcelain', '--untracked-files=no')
+    return {'commit': git('rev-parse', 'HEAD'), 'dirty': bool(status) if status is not None else None}
+
+
+def write_run_info(output_dir: str, stage: str, config: Dict[str, Any], cli_args: Any = None,
+                   model: Any = None, seed: Optional[int] = None, **extra: Any) -> str:
+    """
+    Write run_info.json: everything needed to reproduce a run. That is the
+    resolved config (preset merged with overrides), command-line arguments,
+    seed, git commit, library versions, model size and any extra fields.
+    """
+    import platform
+    import transformers
+    import datasets
+
+    info = {
+        'stage': stage,
+        'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+        'command': ' '.join(sys.argv),
+        'cli_args': vars(cli_args) if cli_args is not None and hasattr(cli_args, '__dict__') else cli_args,
+        'config': config,
+        'seed': seed,
+        'git': git_state(),
+        'versions': {'python': platform.python_version(), 'torch': torch.__version__,
+                     'transformers': transformers.__version__, 'datasets': datasets.__version__},
+        **extra,
+    }
+    if model is not None:
+        info['parameters'] = model.num_parameters()
+        info['model_config'] = model.config.to_dict()
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, 'run_info.json')
+    with open(path, 'w') as f:
+        json.dump(info, f, indent=2, default=str)
+    return path

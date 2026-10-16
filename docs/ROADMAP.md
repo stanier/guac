@@ -50,8 +50,9 @@ words = "the model learns which layer types mix information across tokens".split
 texts = [" ".join(rng.choice(words) for _ in range(rng.randint(8, 120))) for _ in range(400)]
 Dataset.from_dict({"text": texts}).save_to_disk("scratch/smoke/tiny_text")
 EOF
-python scripts/training/pipeline/pretrain.py --model-config guac-106m-arith \
-    --datasets scratch/smoke/tiny_text --output-dir scratch/smoke/pre --max-steps 12 --batch-size 4 --grad-accum 2
+python scripts/training/pipeline/pretrain.py --model-config guac-13m-arith \
+    --datasets scratch/smoke/tiny_text --output-dir scratch/smoke/pre --max-steps 12 --batch-size 4 --grad-accum 2 \
+    --eval-steps 6 --validation-docs 40
 python scripts/training/pipeline/midtrain.py --base-model scratch/smoke/pre --task arithmetic \
     --output-dir scratch/smoke/mid --num-arithmetic-samples 400 --num-eval-samples 40 \
     --accuracy-eval-per-category 2 --max-steps 4 --eval-steps 2 --batch-size 8 --grad-accum 1

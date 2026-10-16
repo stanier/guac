@@ -1,6 +1,17 @@
 defaults:
   intermediate_layers_fac: 4
   max_sequence_length: 1024  # Default sequence length for tokenization and training
+  # Concatenate documents (EOS between them) into full max_sequence_length blocks
+  # instead of truncating each document and discarding the rest
+  pack_sequences: true
+  # Documents held out per pre-training dataset for validation perplexity, where
+  # the dataset has no validation split of its own (0 disables evaluation)
+  validation_docs: 1000
+  eval_steps: 500
+  save_steps: 1000
+  seed: 42
+  # Also send metrics to a tracker (e.g. wandb); metrics.jsonl is always written
+  report_to: none
   step_val: 1
   learning_rate: 8e-4
   warmup_ratio: 0.05

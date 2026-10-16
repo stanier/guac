@@ -61,3 +61,10 @@ def test_site_config_dataset_settings_change_key(site_datasets):
 def test_sequence_length_changes_key(site_datasets):
     tokenizer = make_tokenizer(["a", "b", "c"])
     assert pretraining_cache_key(['fineweb'], tokenizer, 256) != pretraining_cache_key(['fineweb'], tokenizer, 512)
+
+
+@pytest.mark.parametrize("change", [dict(split='validation'), dict(pack=False), dict(validation_docs=500)])
+def test_split_packing_and_holdout_get_their_own_keys(site_datasets, change):
+    """The hold-out size changes the training split too, so it is part of the key."""
+    tokenizer = make_tokenizer(["a", "b", "c"])
+    assert pretraining_cache_key(['fineweb'], tokenizer, 256, **change) != pretraining_cache_key(['fineweb'], tokenizer, 256)

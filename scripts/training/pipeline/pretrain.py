@@ -10,8 +10,8 @@ Usage:
     python pretrain.py --model-config guac-430m --resume-from-checkpoint /path/to/checkpoint
 """
 
-import os, sys, yaml, argparse, torch
-from typing import List, Dict, Any, Optional
+import os, sys, json, yaml, argparse, torch
+from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -22,30 +22,30 @@ sys.path.append(str(project_root))
 from transformers import (
     AutoTokenizer, Trainer, TrainingArguments,
     DataCollatorForLanguageModeling, EarlyStoppingCallback,
-    TrainerCallback
+    TrainerCallback, set_seed
 )
 from datasets import load_dataset, load_from_disk, concatenate_datasets, IterableDataset
 
 try:
     from scripts.training.core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
     from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes
-    from scripts.training.core.pipeline_utils import load_model_config, create_base_training_arguments, create_standard_callbacks, setup_gpu_optimizations, print_training_info, save_model_and_tokenizer, create_cache_dir_name, create_standard_data_collator, get_output_directory, run_training_loop, apply_debug_mode, save_trained_model
-    from scripts.training.core.dataset_utils import load_pretraining_datasets, tokenize_dataset_with_cache, get_pretraining_dataset_settings
+    from scripts.training.core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, write_run_info
+    from scripts.training.core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
     from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
 except ImportError:
     try:
         from ..core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
         from ..core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes
-        from ..core.pipeline_utils import load_model_config, create_base_training_arguments, create_standard_callbacks, setup_gpu_optimizations, print_training_info, save_model_and_tokenizer, create_cache_dir_name, create_standard_data_collator, get_output_directory, run_training_loop, apply_debug_mode, save_trained_model
-        from ..core.dataset_utils import load_pretraining_datasets, tokenize_dataset_with_cache, get_pretraining_dataset_settings
+        from ..core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, write_run_info
+        from ..core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
         from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
     except ImportError:
         parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         sys.path.insert(0, parent_dir)
         from core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
         from core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes
-        from core.pipeline_utils import load_model_config, create_base_training_arguments, create_standard_callbacks, setup_gpu_optimizations, print_training_info, save_model_and_tokenizer, create_cache_dir_name, create_standard_data_collator, get_output_directory, run_training_loop, apply_debug_mode, save_trained_model
-        from core.dataset_utils import load_pretraining_datasets, tokenize_dataset_with_cache, get_pretraining_dataset_settings
+        from core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, write_run_info
+        from core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
         from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
 
 
@@ -356,18 +356,20 @@ class MemoryUsageCallback(TrainerCallback):
 
 
 def pretraining_cache_key(dataset_names: List[str], tokenizer: Any, max_length: int,
-                          debug_samples: Optional[int] = None) -> str:
+                          debug_samples: Optional[int] = None, split: str = 'train', pack: bool = True,
+                          validation_docs: int = 1000, seed: int = 0) -> str:
     """
-    Cache key for a tokenized pre-training dataset.
+    Cache key for one split of a tokenized pre-training dataset.
 
     The readable part names the datasets (by basename, for on-disk paths),
-    vocab size and sequence length. The hash covers everything else that
+    vocab size, sequence length and split. The hash covers everything else that
     changes the tokenized content: the tokenizer itself, each dataset's full
-    name and site_config.yml settings, and the debug subset, so a --debug run
+    name and site_config.yml settings, packing, the validation hold-out (which
+    changes the training split too) and the debug subset, so a --debug run
     never fills the cache used by full runs.
     """
     names = '_'.join(sorted(Path(name).name for name in dataset_names))
-    readable = f"{names}_vocab{get_vocab_size(tokenizer)}_len{max_length}"
+    readable = f"{names}_vocab{get_vocab_size(tokenizer)}_len{max_length}_{split}"
     if debug_samples is not None:
         readable += f"_debug{debug_samples}"
     settings = {
@@ -375,8 +377,45 @@ def pretraining_cache_key(dataset_names: List[str], tokenizer: Any, max_length: 
         'datasets': get_pretraining_dataset_settings(dataset_names),
         'max_length': max_length,
         'debug_samples': debug_samples,
+        'pack': pack,
+        'validation_docs': validation_docs,
+        'seed': seed,
     }
     return f"{readable}_{content_hash(settings)}"
+
+
+def prepare_pretraining_data(dataset_names: List[str], tokenizer: Any, max_length: int, pack: bool = True,
+                             validation_docs: int = 1000, debug: bool = False,
+                             force_retokenize: bool = False) -> Tuple[Any, Optional[Any]]:
+    """
+    Load, split and tokenize the pre-training datasets as (train, validation).
+
+    validation is None when validation_docs is 0. With debug, training uses
+    its first 1000 documents and validation its first 200. Each split is cached
+    under pretraining_cache_key, which tokenize_datasets.py shares.
+    """
+    train, validation = load_pretraining_splits(dataset_names, validation_docs)
+
+    debug_samples = None
+    if debug:
+        print("Debug mode: using smaller dataset")
+        if hasattr(train, 'select'):
+            debug_samples = min(1000, len(train))
+            train = train.select(range(debug_samples))
+        if validation is not None:
+            validation = validation.select(range(min(200, len(validation))))
+
+    key_args = dict(debug_samples=debug_samples, pack=pack, validation_docs=validation_docs)
+    splits = {'train': train, 'validation': validation}
+    tokenized = {}
+    for split, dataset in splits.items():
+        if dataset is None:
+            tokenized[split] = None
+            continue
+        cache_key = pretraining_cache_key(dataset_names, tokenizer, max_length, split=split, **key_args)
+        tokenized[split] = tokenize_dataset_with_cache(dataset, tokenizer, get_cache_directory("pretraining", cache_key),
+                                                       max_length, force_retokenize, pack=pack)
+    return tokenized['train'], tokenized['validation']
 
 
 # Preset keys passed straight through to MixedLayerConfig (per-layer-type and position-encoding settings)
@@ -437,12 +476,15 @@ def create_model(config: Dict[str, Any], tokenizer: Any, print_params: bool = Fa
     return model
 
 
-def create_training_arguments(config: Dict[str, Any], output_dir: str, max_steps: int = -1) -> TrainingArguments:
+def create_training_arguments(config: Dict[str, Any], output_dir: str, max_steps: int = -1,
+                              evaluate: bool = False) -> TrainingArguments:
     """
     Create training arguments from config, using its values as given.
 
-    max_steps <= 0 trains for config['num_train_epochs'] instead.
+    max_steps <= 0 trains for config['num_train_epochs'] instead. With evaluate,
+    the validation set is scored every config['eval_steps'] steps.
     """
+    report_to = config.get('report_to', 'none')
     return TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=config.get('num_train_epochs', 1),
@@ -456,17 +498,18 @@ def create_training_arguments(config: Dict[str, Any], output_dir: str, max_steps
         lr_scheduler_type=config.get('lr_scheduler_type', 'constant_with_warmup'),
         max_grad_norm=config.get('max_grad_norm', 1.0),
         logging_steps=config.get('step_val', 100),
-        save_steps=config.get('step_val', 100) * 10,
-        eval_steps=config.get('step_val', 100) * 5,
+        save_steps=config.get('save_steps', 1000),
+        eval_steps=config.get('eval_steps', 500),
         save_total_limit=3,
         fp16=config.get('fp16', True),
         gradient_checkpointing=True,
-        dataloader_drop_last=True,
+        # Dropping the last partial batch would also drop a validation set smaller than one batch
+        dataloader_drop_last=False,
         dataloader_num_workers=0,
         dataloader_pin_memory=False,
-        eval_strategy="no",
-        report_to=[],
-        seed=42,
+        eval_strategy="steps" if evaluate else "no",
+        report_to=[] if report_to in (None, 'none') else report_to,
+        seed=config.get('seed', 42),
     )
 
 
@@ -543,44 +586,49 @@ def main():
                        help="Per-device batch size (default: the config's pdbs_train)")
     parser.add_argument('--grad-accum', type=int, default=None,
                        help="Gradient accumulation steps (default: the config's grad_accum_steps)")
+    parser.add_argument('--validation-docs', type=int, default=None,
+                       help="Documents held out per dataset for validation, where a dataset has no "
+                            "validation split (default: the config's validation_docs; 0 disables)")
+    parser.add_argument('--pack', action=argparse.BooleanOptionalAction, default=None,
+                       help="Pack documents into full-length blocks instead of truncating each one "
+                            "(default: the config's pack_sequences)")
+    parser.add_argument('--eval-steps', type=int, default=None,
+                       help="Evaluate on the validation set every N steps (default: the config's eval_steps)")
+    parser.add_argument('--save-steps', type=int, default=None,
+                       help="Checkpoint every N steps (default: the config's save_steps)")
+    parser.add_argument('--seed', type=int, default=None,
+                       help="Seed for model initialization and data order (default: the config's seed)")
+    parser.add_argument('--report-to', type=str, default=None,
+                       help="Also log to this tracker, e.g. wandb (default: the config's report_to; "
+                            "metrics.jsonl in the output directory is always written)")
 
     args = parser.parse_args()
 
     print(f"Loading model config: {args.model_config}")
     config = load_model_config(args.model_config)
 
-    if args.vocab_size:
-        config['vocab_size'] = args.vocab_size
-    if args.batch_size is not None:
-        config['pdbs_train'] = args.batch_size
-    if args.grad_accum is not None:
-        config['grad_accum_steps'] = args.grad_accum
+    overrides = {'vocab_size': args.vocab_size, 'pdbs_train': args.batch_size, 'grad_accum_steps': args.grad_accum,
+                 'validation_docs': args.validation_docs, 'pack_sequences': args.pack,
+                 'eval_steps': args.eval_steps, 'save_steps': args.save_steps, 'seed': args.seed,
+                 'report_to': args.report_to}
+    config.update({key: value for key, value in overrides.items() if value is not None})
+    seed = config.get('seed', 42)
+    validation_docs = config.get('validation_docs', 1000)
+    pack = config.get('pack_sequences', True)
 
     dataset_names = args.datasets.split(',')
 
     tokenizer = load_tokenizer(config)
 
-    dataset = load_pretraining_datasets(dataset_names)
+    max_length = args.max_length if args.max_length is not None else config.get('max_sequence_length', 1024)
 
-    debug_samples = None
-    if args.debug:
-        print("Debug mode: using smaller dataset")
-        if hasattr(dataset, 'select'):
-            debug_samples = min(1000, len(dataset))
-            dataset = dataset.select(range(debug_samples))
-
-    if args.max_length is not None: max_length = args.max_length
-    else: max_length = config.get('max_sequence_length', 1024)
-
-    cache_key = pretraining_cache_key(dataset_names, tokenizer, max_length, debug_samples)
-    cache_dir = get_cache_directory("pretraining", cache_key)
-
-    tokenized_dataset = tokenize_dataset_with_cache(
-        dataset, tokenizer, cache_dir, max_length, args.force_retokenize
+    train_dataset, eval_dataset = prepare_pretraining_data(
+        dataset_names, tokenizer, max_length, pack=pack, validation_docs=validation_docs,
+        debug=args.debug, force_retokenize=args.force_retokenize,
     )
 
-    train_dataset = tokenized_dataset
-
+    # Seed before building the model, so its initialization is reproducible too
+    set_seed(seed)
     model = create_model(config, tokenizer, args.print_params)
 
     output_dir = get_output_directory("pretraining", args.model_config, args.output_dir)
@@ -594,41 +642,60 @@ def main():
     if max_steps <= 0 and isinstance(train_dataset, IterableDataset):
         raise ValueError("Streaming datasets have no length, so training can't be measured in epochs. "
                          "Pass --max-steps (MAX_STEPS= with make) or set max_steps in the model config.")
-    training_args = create_training_arguments(config, output_dir, max_steps)
+    training_args = create_training_arguments(config, output_dir, max_steps, evaluate=eval_dataset is not None)
     print_training_settings(training_args, max_length, train_dataset)
+    print(f"  Packing:              {'on' if pack else 'off'}")
+    print(f"  Validation:           {f'{len(eval_dataset):,} sequences, every {training_args.eval_steps} steps' if eval_dataset is not None else 'none'}")
     callbacks = create_callbacks(config, tokenizer, args.enable_profiling, args.print_mem, train_dataset)
+    callbacks.append(MetricsLoggerCallback(os.path.join(output_dir, 'metrics.jsonl')))
 
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,
-        pad_to_multiple_of=8 if training_args.fp16 else None
-    )
+    if pack:
+        data_collator = PackedSequenceCollator()
+    else:
+        data_collator = DataCollatorForLanguageModeling(
+            tokenizer=tokenizer,
+            mlm=False,
+            pad_to_multiple_of=8 if training_args.fp16 else None
+        )
 
-    trainer = Trainer(
+    trainer = GuacTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         data_collator=data_collator,
         callbacks=callbacks,
     )
 
     tokenizer.save_pretrained(output_dir)
     model.config.save_pretrained(output_dir)
+    write_run_info(output_dir, 'pretraining', config, args, model, seed=seed,
+                   model_config_name=args.model_config, datasets=dataset_names, max_length=max_length)
 
     print(f"Starting pre-training...")
     print(f"Model: {args.model_config} ({model.num_parameters():,} parameters)")
 
     try:
-        dataset_size = len(train_dataset)
-        size_info = f"{dataset_size:,} samples"
+        size_info = f"{len(train_dataset):,} sequences"
     except TypeError:
         size_info = "streaming dataset"
 
     print(f"Dataset: {args.datasets} ({size_info})")
     print(f"Output: {output_dir}")
 
-    run_training_loop(trainer, args.resume_from_checkpoint)
+    train_output = run_training_loop(trainer, args.resume_from_checkpoint)
     save_trained_model(trainer, tokenizer, output_dir, save_config=True)
+
+    results = {'train_loss': train_output.training_loss, 'steps': trainer.state.global_step,
+               'runtime_seconds': train_output.metrics.get('train_runtime')}
+    if eval_dataset is not None:
+        final_step = trainer.state.global_step
+        logged = [entry for entry in trainer.state.log_history if 'eval_loss' in entry and entry['step'] == final_step]
+        results.update(logged[-1] if logged else trainer.evaluate())
+    with open(os.path.join(output_dir, 'results.json'), 'w') as f:
+        json.dump(results, f, indent=2)
+    if eval_dataset is not None:
+        print(f"Validation loss {results['eval_loss']:.4f} (perplexity {results['eval_perplexity']:.2f})")
 
     print(f"Pre-training complete! Model saved to {output_dir}")
 
