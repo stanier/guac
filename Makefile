@@ -2,7 +2,7 @@
 # Provides convenient commands for common training workflows
 
 .PHONY: help debug train arithmetic eval-arithmetic clean cache test install pipeline pretrain midtrain posttrain \
-	status clean-models clean-cache progressive multitask benchmark expert examples \
+	status clean-models clean-cache multitask examples \
 	pretrain-debug midtrain-debug posttrain-debug pipeline-debug pipeline-profiling \
 	pipeline-code pipeline-reasoning pipeline-guac-3b pipeline-guac-1.7b pipeline-guac-910m pipeline-guac-430m \
 	configs arch download-datasets download-datasets-from download-pretraining-datasets \
@@ -350,14 +350,6 @@ cache:
 # ADVANCED PIPELINE COMMANDS
 # ============================================================================
 
-# Progressive training: guac-3b → guac-1.7b → guac-910m
-progressive:
-	@echo "📈 Progressive training pipeline..."
-	$(MAKE) pipeline CONFIG=guac-3b
-	$(MAKE) pipeline CONFIG=guac-1.7b
-	$(MAKE) pipeline CONFIG=guac-910m
-	@echo "✅ Progressive training complete!"
-
 # Multi-task training: Train all tasks
 multitask:
 	@echo "🎯 Multi-task training pipeline..."
@@ -366,20 +358,6 @@ multitask:
 	$(MAKE) midtrain TASK=code
 	$(MAKE) midtrain TASK=reasoning
 	@echo "✅ Multi-task training complete!"
-
-# Benchmark training: Train popular configs
-benchmark:
-	@echo "🏆 Benchmark training..."
-	$(MAKE) pipeline CONFIG=guac-3b TASK=arithmetic
-	$(MAKE) pipeline CONFIG=guac-910m TASK=code
-	$(MAKE) pipeline CONFIG=guac-430m TASK=reasoning
-	@echo "✅ Benchmark training complete!"
-
-# Expert training: Large model with all stages
-expert:
-	@echo "🎓 Expert model training..."
-	$(MAKE) pipeline CONFIG=guac-9b TASK=reasoning MODE=instruction
-	@echo "✅ Expert training complete!"
 
 # ============================================================================
 # QUICK REFERENCE AND EXAMPLES
@@ -415,7 +393,6 @@ examples:
 	@echo "🎯 Advanced Pipelines:"
 	@echo "  make pipeline CONFIG=guac-430m TASK=reasoning MODE=sft"
 	@echo "  make multitask CONFIG=guac-910m  # Train all tasks"
-	@echo "  make progressive             # Train guac-3b→guac-1.7b→guac-910m"
 	@echo ""
 	@echo "🛠️  Utilities:"
 	@echo "  make test                    # Test installation"
@@ -434,19 +411,17 @@ configs:
 arch:
 	@echo "🏗️  Guac Architecture Information:"
 	@echo "=================================="
-	@echo "🧠 Available layer types:"
-	@echo "  - mamba2: Mamba-2 state space model"
-	@echo "  - conv: 1D convolution layer"
-	@echo "  - based: BASED linear attention"
-	@echo "  - attention: Standard multi-head attention"
+	@echo "🧠 Available layer types (mixers; each block also has an FFN, see docs/ARCHITECTURE.md):"
+	@echo "  - full_attention / flash_attention: grouped-query softmax attention with RoPE"
+	@echo "  - sliding_window_attention: softmax attention over the last sliding_window_size positions"
 	@echo "  - moh_attention: Mixture-of-Head attention"
-	@echo "  - shared_expert_moe: Mixture-of-Experts with shared experts"
+	@echo "  - conv: causal 1D convolution"
+	@echo "  - mamba2: Mamba-2 selective state space (chunked SSD scan)"
+	@echo "  - based: BASED linear attention (Taylor feature map)"
+	@echo "  - mlp_only, shared_expert_moe: no mixer (FFN or MoE only)"
 	@echo ""
-	@echo "🔧 Modern features enabled by default:"
-	@echo "  - RMSNorm (faster than LayerNorm)"
-	@echo "  - Flash Attention 2 (memory efficient)"
-	@echo "  - Mixed precision training (FP16)"
-	@echo "  - Gradient checkpointing (for large models)"
+	@echo "🔧 Defaults: pre-norm RMSNorm blocks, SwiGLU FFNs, tied embeddings, FP16 on CUDA,"
+	@echo "   gradient checkpointing, cached generation"
 
 # ============================================================================
 # DATASET DOWNLOAD TARGETS
@@ -480,7 +455,7 @@ download-datasets:
 			continue; \
 		fi; \
 		echo "📡 Downloading $$repo ($$size)..."; \
-		cmd="python hf_partial_download.py \"$$repo\" --size \"$$size\" --output \"$(DOWNLOAD_OUTPUT)\""; \
+		cmd="python scripts/hf_partial_download.py \"$$repo\" --size \"$$size\" --output \"$(DOWNLOAD_OUTPUT)\""; \
 		if [ -n "$$split" ]; then \
 			cmd="$$cmd --split \"$$split\""; \
 		fi; \
@@ -533,7 +508,7 @@ download-pretraining-datasets:
 	@failed=0; \
 	for dataset in fineweb fineweb-edu wikitext-103; do \
 		echo "⬇️  Downloading $$dataset..."; \
-		if python hf_partial_download.py --from-site-config $$dataset --output "$(DOWNLOAD_OUTPUT)" --site-config-path "$(SITE_CONFIG_PATH)"; then \
+		if python scripts/hf_partial_download.py --from-site-config $$dataset --output "$(DOWNLOAD_OUTPUT)" --site-config-path "$(SITE_CONFIG_PATH)"; then \
 			echo "✅ Successfully downloaded $$dataset"; \
 		else \
 			echo "❌ Failed to download $$dataset"; \
@@ -557,7 +532,7 @@ download-from-site-config:
 		exit 1; \
 	fi
 	@echo "📥 Downloading $(DATASET) from site config..."
-	python hf_partial_download.py --from-site-config $(DATASET) \
+	python scripts/hf_partial_download.py --from-site-config $(DATASET) \
 		--output "$(DOWNLOAD_OUTPUT)" \
 		--site-config-path "$(SITE_CONFIG_PATH)" \
 		--dataset-type $(DATASET_TYPE)
@@ -572,7 +547,7 @@ download-instruction-datasets:
 	@failed=0; \
 	for dataset in openorca; do \
 		echo "⬇️  Downloading $$dataset..."; \
-		if python hf_partial_download.py --from-site-config $$dataset --dataset-type instruction_datasets --output "$(DOWNLOAD_OUTPUT)" --site-config-path "$(SITE_CONFIG_PATH)"; then \
+		if python scripts/hf_partial_download.py --from-site-config $$dataset --dataset-type instruction_datasets --output "$(DOWNLOAD_OUTPUT)" --site-config-path "$(SITE_CONFIG_PATH)"; then \
 			echo "✅ Successfully downloaded $$dataset"; \
 		else \
 			echo "❌ Failed to download $$dataset"; \

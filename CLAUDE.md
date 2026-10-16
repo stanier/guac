@@ -85,7 +85,7 @@ All output paths (tokenized datasets, checkpoints, models) resolve through `Path
 
 ### Dataset Management
 
-`datasets_download.csv` is a manifest for `scripts/hf_partial_download.py`. Supports partial downloads by size (`100MB`, `50K`, `10%`). The CSV isn't in the repo yet, and the `make download-*` targets call the script at the wrong path (see `docs/ROADMAP.md`).
+`datasets_download.csv` is a manifest for `scripts/hf_partial_download.py` (`make download-datasets`). Supports partial downloads by size (`100MB`, `50K`, `10%`).
 
 ```bash
 python scripts/hf_partial_download.py --csv datasets_download.csv

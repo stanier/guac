@@ -1,0 +1,6 @@
+# Manifest for `make download-datasets` (scripts/hf_partial_download.py).
+# Columns: repo,size,split,config,format. Size is a count (10000, 100K), a
+# percentage (10%) or bytes (500MB); split defaults to train, format to jsonl.
+HuggingFaceFW/fineweb-edu,100MB,train,sample-10BT,jsonl
+Salesforce/wikitext,100%,validation,wikitext-103-raw-v1,jsonl
+tatsu-lab/alpaca,10K,train,,jsonl
