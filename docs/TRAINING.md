@@ -130,7 +130,10 @@ see `docs/DATASET_DOWNLOAD.md` (`make download-datasets` reads
   are joined with EOS between them and cut into blocks of exactly
   `max_sequence_length` tokens, so nothing beyond `max_sequence_length` is thrown
   away and no batch holds padding. Documents run across block boundaries, and
-  attention isn't reset at EOS (as in GPT-style pre-training). Unpacked, each
+  by default layers aren't reset at EOS (as in GPT-style pre-training);
+  `--reset-at-document-boundaries` (or `reset_at_document_boundaries: true` in
+  the config) keeps each document's context to itself, for attention and
+  recurrent layers alike (see `docs/ARCHITECTURE.md`). Unpacked, each
   document is truncated to `max_sequence_length` and the rest discarded.
 - Tokenized splits are cached under keys that cover the tokenizer, dataset
   settings, sequence length, packing and hold-out size.

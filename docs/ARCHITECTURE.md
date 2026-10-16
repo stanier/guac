@@ -63,6 +63,20 @@ attention), and fixed-size states for conv (last k-1 inputs), Mamba-2 (conv and
 SSM state) and BASED (the running `sum phi(k) v^T`).
 Mixers are looked up in the `MIXERS` registry in `custom_architectures.py`.
 
+**Packed documents** can be kept apart with `reset_at_document_boundaries: true`
+(or `pretrain.py --reset-at-document-boundaries`). Each document ends at
+`eos_token_id`; without a generation cache, attention then masks keys from
+other documents, conv windows treat earlier documents' inputs as zeros, Mamba-2
+and BASED restart their state, and absolute positions restart. A document
+packed among others gets exactly the outputs (and gradients) it would get
+alone; `tests/test_document_boundaries.py` checks this for every layer type.
+It costs 10–40% per training step on CPU, and attention loses PyTorch's fastest
+kernels to the explicit mask, so it is off by default (GPT-style packing).
+Recurrent layers are where it matters most: without it, Mamba-2 and BASED carry
+one document's state into the next, where attention can learn to ignore what
+came before. Generation ignores it. The model's pad, BOS and EOS ids come
+from the tokenizer.
+
 **The FFN is chosen per layer** with `ffn_types` (one entry per layer):
 
 | `ffn_types` entry | FFN |
@@ -140,7 +154,9 @@ class Mamba2Mixer:                 # its block has a SwiGLU FFN unless ffn_types
 
 **The scan**: the chunked structured state space duality (SSD) algorithm in plain
 PyTorch. Inside each chunk it is a causal, attention-like product; between chunks
-it is a linear recurrence over chunk states. It computes exactly the sequential
+it is a linear recurrence over chunk states, itself scanned in chunks once there
+are more than `2 * mamba_chunk_size` of them, so cost stays linear in the
+sequence length at any length. It computes exactly the sequential
 recurrence `h_t = exp(A·dt_t)·h_{t-1} + dt_t·x_t⊗B_t`, `y_t = h_t·C_t + D·x_t`
 (tested against it), runs on any device, and keeps the scan in float32 under
 mixed precision. Parameter names follow the reference implementations
@@ -156,7 +172,7 @@ and `mamba_ssm` installed, so it hasn't been run yet. The default stays `torch`
 until it has.
 
 **Characteristics**:
-- **Complexity**: O(L·Q·(N+P)) per head for the scan, with chunk length Q, state size N, head size P
+- **Complexity**: O(L·Q·(N+P) + L·N·P) per head for the scan, with chunk length Q, state size N, head size P
 - **Memory**: O(N·P) state per head at inference; linear in L during training
 - **Use Cases**: Long sequences, time series, language modeling
 
@@ -295,6 +311,7 @@ mamba_headdim: 64         # Head size P; inner size must be divisible by it
 mamba_ngroups: 1          # B/C groups shared across heads (heads must divide evenly)
 mamba_chunk_size: 64      # Scan chunk length: speed/memory only, results are identical
 mamba_scan_impl: torch    # or mamba_ssm: its fused Triton kernel for CUDA inputs (needs the package)
+reset_at_document_boundaries: false   # true: packed documents don't see each other (see above)
 
 # BASED parameters
 based_feature_dim: 16     # Query/key size per head before the Taylor feature map

@@ -132,6 +132,7 @@ def load_lm_data(task: Dict[str, Any]) -> Tuple[Any, torch.Tensor, torch.Tensor]
 def run_one(spec, arch_name: str, task: Dict[str, Any], seed: int, lm_data) -> Dict[str, Any]:
     settings = architecture_settings(spec, arch_name)
     seq_len = task_seq_len(task)
+    tokenizer = None
     if task['task'] == 'lm':
         tokenizer, train_blocks, validation_blocks = lm_data
         vocab_size = len(tokenizer)
@@ -140,7 +141,7 @@ def run_one(spec, arch_name: str, task: Dict[str, Any], seed: int, lm_data) -> D
         vocab_size = task_args.setdefault('vocab_size', DEFAULT_VOCAB[task['task']])
 
     torch.manual_seed(seed)
-    model_config = build_model_config(settings, vocab_size)
+    model_config = build_model_config(settings, vocab_size, tokenizer)
     model = MixedLayerForCausalLM(model_config)
     train = {**(spec.get('train') or {}), **{k: task[k] for k in TRAIN_KEYS if k in task}}
     steps = task.get('steps', spec.get('steps', 1000))

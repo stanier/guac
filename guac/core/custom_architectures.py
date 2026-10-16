@@ -37,7 +37,7 @@ def default_ffn_type(layer_type: str) -> str:
     return "moe" if layer_type == "shared_expert_moe" else "swiglu"
 
 
-def causal_attention(query, key, value, attention_mask=None, dropout_p=0.0, window=None):
+def causal_attention(query, key, value, attention_mask=None, dropout_p=0.0, window=None, document_ids=None):
     """
     Causal scaled dot-product attention shared by every softmax-attention layer.
 
@@ -48,7 +48,8 @@ def causal_attention(query, key, value, attention_mask=None, dropout_p=0.0, wind
     attention_mask is an optional (batch, total_len) key padding mask with 1 for
     real tokens and 0 for padding; its last key_len entries cover the keys.
     With `window`, each position attends only to the last `window` positions,
-    itself included.
+    itself included. document_ids (batch, seq), for packed sequences without a
+    cache, restricts each position to keys in its own document.
 
     F.scaled_dot_product_attention picks a FlashAttention or memory-efficient
     kernel when the device and dtype support it, and the math kernel otherwise.
@@ -59,21 +60,26 @@ def causal_attention(query, key, value, attention_mask=None, dropout_p=0.0, wind
         value = value.repeat_interleave(num_kv_groups, dim=1)
 
     if key.size(2) != query.size(2):
+        if document_ids is not None:
+            raise ValueError("document_ids can't be combined with cached keys")
         return _attention_after_cached_keys(query, key, value, attention_mask, dropout_p, window)
     if attention_mask is not None:
         attention_mask = attention_mask[:, -key.size(2):]
 
     if window is not None and window < query.size(2):
-        return sliding_window_attention(query, key, value, window, attention_mask, dropout_p)
+        return sliding_window_attention(query, key, value, window, attention_mask, dropout_p, document_ids)
 
-    # Without padding the causal mask alone is exact, and is_causal=True lets
-    # PyTorch use its fastest kernels
-    if attention_mask is None or bool(attention_mask.all()):
+    # Without padding or documents the causal mask alone is exact, and
+    # is_causal=True lets PyTorch use its fastest kernels
+    if document_ids is None and (attention_mask is None or bool(attention_mask.all())):
         return F.scaled_dot_product_attention(query, key, value, dropout_p=dropout_p, is_causal=True)
 
     seq_len = query.size(2)
     allowed = torch.ones(seq_len, seq_len, dtype=torch.bool, device=query.device).tril()
-    allowed = allowed & attention_mask[:, None, None, :].bool()
+    if attention_mask is not None:
+        allowed = allowed & attention_mask[:, None, None, :].bool()
+    if document_ids is not None:
+        allowed = allowed & (document_ids[:, None, :, None] == document_ids[:, None, None, :])
     # Always let a position attend to itself so no row is fully masked: a fully
     # masked row makes softmax return NaN at that padding position, and later
     # layers spread it to real tokens through 0 * NaN
@@ -95,9 +101,10 @@ def _attention_after_cached_keys(query, key, value, attention_mask, dropout_p, w
     return F.scaled_dot_product_attention(query, key, value, attn_mask=allowed, dropout_p=dropout_p)
 
 
-def sliding_window_attention(query, key, value, window, attention_mask=None, dropout_p=0.0):
+def sliding_window_attention(query, key, value, window, attention_mask=None, dropout_p=0.0, document_ids=None):
     """
-    Causal attention where position t sees positions t - window + 1 through t.
+    Causal attention where position t sees positions t - window + 1 through t
+    (only those in its own document, given document_ids (batch, seq)).
 
     query, key and value are (batch, heads, seq, head_dim) with the same head
     count. The sequence is split into blocks of `window` positions, and each
@@ -111,6 +118,8 @@ def sliding_window_attention(query, key, value, window, attention_mask=None, dro
     if pad:
         query, key, value = (F.pad(t, (0, 0, 0, pad)) for t in (query, key, value))
         key_valid = F.pad(key_valid, (0, pad))
+        if document_ids is not None:
+            document_ids = F.pad(document_ids, (0, pad), value=-1)
     num_blocks = query.size(2) // window
 
     def blocks(t):  # (batch, heads, blocks * window, dim) -> (batch, blocks, heads, window, dim)
@@ -131,6 +140,10 @@ def sliding_window_attention(query, key, value, window, attention_mask=None, dro
     rows = torch.arange(window, device=query.device)[:, None]
     in_window = (offsets > rows) & (offsets <= rows + window)
     allowed = in_window & key_valid[:, :, None, :]
+    if document_ids is not None:
+        query_ids = document_ids.reshape(batch, num_blocks, window)
+        key_ids = torch.cat([F.pad(query_ids[:, :-1], (0, 0, 1, 0), value=-1), query_ids], dim=-1)
+        allowed = allowed & (query_ids[..., :, None] == key_ids[..., None, :])
     # As in causal_attention, always allow attending to itself so no row is fully masked
     allowed = allowed | (offsets == rows + window)
 
@@ -294,6 +307,10 @@ class MixedLayerConfig(PretrainedConfig):
         # embeddings. Off by default: attention mixers get RoPE, and conv, Mamba-2
         # and BASED mixers see order through their causal structure
         use_absolute_position_embeddings=False,
+        # Keep packed documents apart: without a generation cache, every mixer
+        # restarts after each eos_token_id (attention masks earlier documents;
+        # conv, Mamba-2 and BASED reset their state). See MixedLayerForCausalLM.forward
+        reset_at_document_boundaries=False,
         layer_types=None,
         # Per-layer FFN: "swiglu", "moe" or "none". None -> MoE for shared_expert_moe, SwiGLU otherwise
         ffn_types=None,
@@ -365,6 +382,7 @@ class MixedLayerConfig(PretrainedConfig):
         self.use_rope = use_rope
         self.rope_theta = float(rope_theta)
         self.use_absolute_position_embeddings = use_absolute_position_embeddings
+        self.reset_at_document_boundaries = reset_at_document_boundaries
 
         # MoH (Mixture-of-Head) parameters
         self.moh_top_k = kwargs.get('moh_top_k', max(1, num_attention_heads // 2))
@@ -439,8 +457,9 @@ class MixedLayerConfig(PretrainedConfig):
 
 # ---------------------------------------------------------------------------
 # Mixers: the part of a block that moves information between positions.
-# Each takes (hidden_states, attention_mask=None) and returns a tensor of the
-# same shape. Norms, residuals and the feed-forward network live in
+# Each takes (hidden_states, attention_mask=None, cache=None, document_ids=None)
+# and returns a tensor of the same shape. document_ids (batch, seq), given only
+# without a cache, keeps packed documents from mixing (see MixedLayerForCausalLM.forward). Norms, residuals and the feed-forward network live in
 # MixedTransformerLayer, so every layer type gets the same block around its mixer.
 # ---------------------------------------------------------------------------
 
@@ -458,13 +477,13 @@ class ConvMixer(nn.Module):
             groups=config.conv_groups
         )
 
-    def forward(self, hidden_states, attention_mask=None, cache=None):
+    def forward(self, hidden_states, attention_mask=None, cache=None, document_ids=None):
         keep = padding_keep(attention_mask, hidden_states.size(1), hidden_states.dtype)
         if keep is not None:
             # Zero padding so it never reaches real tokens (left padding included)
             hidden_states = hidden_states * keep
         state = cache.get("conv_state") if cache is not None else None
-        conv_output, state = causal_conv1d(hidden_states.transpose(1, 2), self.conv1d, state)
+        conv_output, state = causal_conv1d(hidden_states.transpose(1, 2), self.conv1d, state, document_ids)
         if cache is not None:
             cache["conv_state"] = state
         return conv_output.transpose(1, 2)
@@ -502,7 +521,7 @@ class GroupedQueryAttention(nn.Module):
         self.attention_dropout = config.attention_probs_dropout_prob
         self.rotary = RotaryEmbedding(self.head_dim, config.rope_theta) if config.use_rope else None
 
-    def forward(self, hidden_states, attention_mask=None, cache=None):
+    def forward(self, hidden_states, attention_mask=None, cache=None, document_ids=None):
         batch_size, seq_length, _ = hidden_states.shape
 
         query_states = self.q_proj(hidden_states).view(batch_size, seq_length, self.num_attention_heads, self.head_dim).transpose(1, 2)
@@ -515,6 +534,7 @@ class GroupedQueryAttention(nn.Module):
         attn_output = causal_attention(
             query_states, key_states, value_states, attention_mask,
             dropout_p=self.attention_dropout if self.training else 0.0, window=self.window,
+            document_ids=document_ids,
         )
 
         attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_length, self.hidden_size)
@@ -547,8 +567,8 @@ class ConfigMamba2Mixer(Mamba2Mixer):
             scan_impl=config.mamba_scan_impl,
         )
 
-    def forward(self, hidden_states, attention_mask=None, cache=None):
-        return super().forward(hidden_states, attention_mask, cache)
+    def forward(self, hidden_states, attention_mask=None, cache=None, document_ids=None):
+        return super().forward(hidden_states, attention_mask, cache, document_ids)
 
 
 class BasedMixer(nn.Module):
@@ -581,7 +601,7 @@ class BasedMixer(nn.Module):
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
 
-    def forward(self, hidden_states, attention_mask=None, cache=None):
+    def forward(self, hidden_states, attention_mask=None, cache=None, document_ids=None):
         batch_size, seq_len, _ = hidden_states.shape
 
         q = self.q_proj(hidden_states).view(batch_size, seq_len, self.num_heads, self.feature_dim).transpose(1, 2)
@@ -605,7 +625,8 @@ class BasedMixer(nn.Module):
                 v = v.repeat_interleave(groups, dim=1)
 
             state = (cache["kv_state"], cache["k_sum_state"]) if cache is not None and "kv_state" in cache else None
-            y, state = causal_linear_attention(q, k, v, self.chunk_size, initial_state=state)
+            y, state = causal_linear_attention(q, k, v, self.chunk_size, initial_state=state,
+                                               document_ids=document_ids)
             if cache is not None:
                 cache["kv_state"], cache["k_sum_state"] = state
 
@@ -656,7 +677,7 @@ class MixtureOfHeadAttention(nn.Module):
         self.attention_dropout = config.attention_probs_dropout_prob
         self.rotary = RotaryEmbedding(self.head_dim, config.rope_theta) if config.use_rope else None
 
-    def forward(self, hidden_states, attention_mask=None, cache=None):
+    def forward(self, hidden_states, attention_mask=None, cache=None, document_ids=None):
         batch_size, seq_len, _ = hidden_states.shape
 
         # Compute head selection scores per token so routing at position t
@@ -692,7 +713,7 @@ class MixtureOfHeadAttention(nn.Module):
         # (Q head i uses KV head i // num_kv_groups)
         attn_output = causal_attention(
             q, k, v, attention_mask,
-            dropout_p=self.attention_dropout if self.training else 0.0,
+            dropout_p=self.attention_dropout if self.training else 0.0, document_ids=document_ids,
         )  # [batch_size, num_heads, seq_len, head_dim]
 
         # Scale each head's output by its gate (0 for heads not selected at that
@@ -920,10 +941,10 @@ class MixedTransformerLayer(nn.Module):
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, hidden_states, attention_mask=None, cache=None):
+    def forward(self, hidden_states, attention_mask=None, cache=None, document_ids=None):
         """cache is this layer's LayerCache during generation, else None."""
         if self.mixer is not None:
-            mixed = self.mixer(self.mixer_norm(hidden_states), attention_mask, cache)
+            mixed = self.mixer(self.mixer_norm(hidden_states), attention_mask, cache, document_ids)
             hidden_states = hidden_states + self.dropout(mixed)
         if self.ffn_type == "moe":
             # The mask keeps padding out of the load-balancing statistics
@@ -938,8 +959,8 @@ class MixedTransformerLayer(nn.Module):
         return self.ffn.aux_loss if self.ffn_type == "moe" else None
 
 
-def _run_layer(layer, hidden_states, attention_mask):
-    hidden_states = layer(hidden_states, attention_mask)
+def _run_layer(layer, hidden_states, attention_mask, document_ids=None):
+    hidden_states = layer(hidden_states, attention_mask, document_ids=document_ids)
     return hidden_states, layer.aux_loss
 
 
@@ -1069,6 +1090,32 @@ def flop_matched_ffn_hidden_sizes(config, reference_layer_type: str = "full_atte
     return sizes
 
 
+def documents_from_eos(input_ids: torch.Tensor, eos_token_id) -> torch.Tensor:
+    """
+    Document ids for packed input_ids (batch, seq_len): each document ends with
+    an EOS token, so the id is the number of EOS tokens strictly before each
+    position. The EOS stays in the document it ends, and predicts the next
+    document's first token from that document alone.
+    """
+    if eos_token_id is None:
+        raise ValueError("reset_at_document_boundaries needs config.eos_token_id")
+    eos_ids = torch.as_tensor(eos_token_id, device=input_ids.device).reshape(-1)
+    is_eos = torch.isin(input_ids, eos_ids).long()
+    return is_eos.cumsum(dim=1) - is_eos
+
+
+def positions_within_documents(document_ids: torch.Tensor, attention_mask=None) -> torch.Tensor:
+    """Each real token's index within its document (padding not counted), for absolute position embeddings."""
+    real = (torch.ones_like(document_ids) if attention_mask is None
+            else attention_mask[:, -document_ids.size(1):].long())
+    count = real.cumsum(dim=1)
+    positions = torch.arange(document_ids.size(1), device=document_ids.device).expand_as(document_ids)
+    is_start = F.pad(document_ids[:, 1:] != document_ids[:, :-1], (1, 0), value=True)
+    first = (positions * is_start).cummax(dim=1).values
+    before_document = F.pad(count, (1, 0)).gather(1, first)
+    return (count - before_document - 1).clamp(min=0)
+
+
 class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
     """
     Mixed Layer Transformer model for causal language modeling.
@@ -1172,12 +1219,20 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        document_ids: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, MoeCausalLMOutputWithPast]:
         """
         attention_mask (batch, total_len) covers the cached tokens too, as generate() passes it.
         past_key_values is a MixedLayerCache. With use_cache (default config.use_cache)
         and no labels, outside training, a cache is created if none is given, updated
         with the new tokens and returned; generate() uses it to feed one token at a time.
+
+        document_ids (batch, seq_len), non-decreasing, marks packed documents:
+        no mixer passes information between positions with different ids, and
+        absolute positions restart at each document. With
+        config.reset_at_document_boundaries they come from input_ids, each
+        document ending at its eos_token_id. Either way they apply only without
+        a cache; generation ignores document boundaries.
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         use_cache = use_cache if use_cache is not None else self.config.use_cache
@@ -1188,6 +1243,13 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
         if not use_cache:
             past_key_values = None
         past_length = past_key_values.seen_tokens if past_key_values is not None else 0
+        if past_key_values is not None:
+            if document_ids is not None:
+                raise ValueError("document_ids can't be combined with a generation cache; pass use_cache=False")
+        elif document_ids is None and self.config.reset_at_document_boundaries and input_ids is not None:
+            document_ids = documents_from_eos(input_ids, self.config.eos_token_id)
+        if document_ids is not None and bool((document_ids[:, -1] == document_ids[:, 0]).all()):
+            document_ids = None  # One document per row: nothing to separate
 
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
@@ -1204,7 +1266,9 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
 
         hidden_states = inputs_embeds
         if self.position_embeddings is not None:
-            if position_ids is None and attention_mask is not None:
+            if position_ids is None and document_ids is not None:
+                position_ids = positions_within_documents(document_ids, attention_mask)
+            elif position_ids is None and attention_mask is not None:
                 # Count real tokens only, so left padding doesn't shift a row's positions
                 position_ids = (attention_mask.long().cumsum(-1) - 1).clamp(min=0)[:, -seq_length:]
             elif position_ids is None:
@@ -1225,10 +1289,10 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
             if self.gradient_checkpointing and self.training:
                 # The aux loss is returned from inside the checkpoint, so its graph is recomputed with the layer's
                 hidden_states, layer_aux_loss = torch.utils.checkpoint.checkpoint(
-                    _run_layer, layer, hidden_states, attention_mask, use_reentrant=False
+                    _run_layer, layer, hidden_states, attention_mask, document_ids, use_reentrant=False
                 )
             else:
-                hidden_states, layer_aux_loss = _run_layer(layer, hidden_states, attention_mask)
+                hidden_states, layer_aux_loss = _run_layer(layer, hidden_states, attention_mask, document_ids)
             if layer_aux_loss is not None:
                 aux_loss = layer_aux_loss if aux_loss is None else aux_loss + layer_aux_loss
         if past_key_values is not None:

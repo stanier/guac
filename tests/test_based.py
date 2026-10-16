@@ -51,6 +51,33 @@ def test_chunked_linear_attention_matches_quadratic_form(length, chunk_size):
         torch.testing.assert_close(a, e)
 
 
+@pytest.mark.parametrize("length, chunk_size", [(23, 4), (40, 8), (9, 16), (64, 4)])
+def test_document_ids_keep_packed_documents_apart(length, chunk_size):
+    torch.manual_seed(0)
+    q = taylor_feature_map(torch.randn(2, 3, length, 4, dtype=torch.float64)).requires_grad_()
+    k = taylor_feature_map(torch.randn(2, 3, length, 4, dtype=torch.float64)).requires_grad_()
+    v = torch.randn(2, 3, length, 5, dtype=torch.float64, requires_grad=True)
+    starts = torch.rand(2, length) < 0.1
+    starts[:, 0] = False
+    starts[0, 5:7] = True  # a one-token document
+    document_ids = starts.long().cumsum(dim=1)
+
+    same_document = (document_ids[:, None, :, None] == document_ids[:, None, None, :])
+    scores = (q @ k.transpose(-1, -2)).tril() * same_document
+    expected = (scores @ v) / scores.sum(-1, keepdim=True)
+    actual, (kv, k_sum) = causal_linear_attention(q, k, v, chunk_size, eps=0.0, document_ids=document_ids)
+    torch.testing.assert_close(actual, expected)
+
+    grad = torch.randn_like(expected)
+    for a, e in zip(torch.autograd.grad(actual, (q, k, v), grad), torch.autograd.grad(expected, (q, k, v), grad)):
+        torch.testing.assert_close(a, e)
+
+    # The final state holds only the last document
+    in_last = (document_ids == document_ids[:, -1:])[:, None, :, None].double()
+    torch.testing.assert_close(kv, (k * in_last).transpose(-1, -2) @ v)
+    torch.testing.assert_close(k_sum, (k * in_last).sum(-2))
+
+
 def test_linear_attention_continues_from_a_carried_state():
     """Splitting a sequence and passing the state across gives the same outputs, as in generation."""
     torch.manual_seed(0)

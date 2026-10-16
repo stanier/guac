@@ -196,13 +196,23 @@ def prepare_pretraining_data(dataset_names: List[str], tokenizer: Any, max_lengt
 # Preset keys passed straight through to MixedLayerConfig (per-layer-type and position-encoding settings)
 MODEL_SETTING_PREFIXES = (
     'num_experts', 'num_shared_experts', 'moe_', 'moh_', 'mamba_', 'based_', 'conv_', 'sliding_window_',
-    'use_rope', 'rope_', 'use_absolute_position_embeddings',
+    'use_rope', 'rope_', 'use_absolute_position_embeddings', 'reset_at_document_boundaries',
 )
 
 
-def build_model_config(config: Dict[str, Any], vocab_size: int) -> MixedLayerConfig:
+def special_token_ids(tokenizer: Any) -> Dict[str, Any]:
+    """The pad, BOS and EOS ids a tokenizer defines (none without a tokenizer, keeping the config defaults)."""
+    if tokenizer is None:
+        return {}
+    ids = {f'{name}_token_id': getattr(tokenizer, f'{name}_token_id', None) for name in ('pad', 'bos', 'eos')}
+    return {key: value for key, value in ids.items() if value is not None}
+
+
+def build_model_config(config: Dict[str, Any], vocab_size: int, tokenizer: Any = None) -> MixedLayerConfig:
     """
     Build the MixedLayerConfig for a model_configs.yaml entry (validates layer types).
+    With a tokenizer, the config takes its pad, BOS and EOS token ids (generation
+    stops at the EOS id, and reset_at_document_boundaries splits documents at it).
 
     With `param_match: <layer type>` (or `true` for full_attention), every SwiGLU
     layer's FFN width is set so its block has the parameters of a block of that type.
@@ -222,6 +232,7 @@ def build_model_config(config: Dict[str, Any], vocab_size: int) -> MixedLayerCon
         tie_word_embeddings=config.get('tie_word_embeddings', True),
         ffn_types=config.get('ffn_types'),
         ffn_hidden_sizes=config.get('ffn_hidden_sizes'),
+        **special_token_ids(tokenizer),
         **{k: v for k, v in config.items() if k.startswith(MODEL_SETTING_PREFIXES)}
     )
     param_match, flop_match = config.get('param_match'), config.get('flop_match')
@@ -242,7 +253,7 @@ def create_model(config: Dict[str, Any], tokenizer: Any, print_params: bool = Fa
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    model = MixedLayerForCausalLM(build_model_config(config, len(tokenizer)))
+    model = MixedLayerForCausalLM(build_model_config(config, len(tokenizer), tokenizer))
     print(f"Created model with {model.num_parameters():,} parameters")
 
     if print_params:
@@ -368,6 +379,9 @@ def main():
     parser.add_argument('--pack', action=argparse.BooleanOptionalAction, default=None,
                        help="Pack documents into full-length blocks instead of truncating each one "
                             "(default: the config's pack_sequences)")
+    parser.add_argument('--reset-at-document-boundaries', action=argparse.BooleanOptionalAction, default=None,
+                       help="Keep packed documents apart: every layer restarts after each EOS token "
+                            "(default: the config's reset_at_document_boundaries, off)")
     parser.add_argument('--eval-steps', type=int, default=None,
                        help="Evaluate on the validation set every N steps (default: the config's eval_steps)")
     parser.add_argument('--save-steps', type=int, default=None,
@@ -385,6 +399,7 @@ def main():
 
     overrides = {'vocab_size': args.vocab_size, 'pdbs_train': args.batch_size, 'grad_accum_steps': args.grad_accum,
                  'validation_docs': args.validation_docs, 'pack_sequences': args.pack,
+                 'reset_at_document_boundaries': args.reset_at_document_boundaries,
                  'eval_steps': args.eval_steps, 'save_steps': args.save_steps, 'seed': args.seed,
                  'report_to': args.report_to}
     config.update({key: value for key, value in overrides.items() if value is not None})

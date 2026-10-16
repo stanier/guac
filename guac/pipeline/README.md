@@ -24,7 +24,7 @@ python guac/pipeline/posttrain.py --base-model ... --mode sft --datasets chats.j
 
 | Script | Key options |
 |--------|-------------|
-| `pretrain.py` | `--model-config`, `--datasets`, `--max-steps`, `--batch-size`, `--grad-accum`, `--max-length`, `--validation-docs` (0 disables evaluation), `--pack/--no-pack`, `--eval-steps`, `--save-steps`, `--seed`, `--report-to`, `--debug`, `--print-params`, `--print-mem` |
+| `pretrain.py` | `--model-config`, `--datasets`, `--max-steps`, `--batch-size`, `--grad-accum`, `--max-length`, `--validation-docs` (0 disables evaluation), `--pack/--no-pack`, `--reset-at-document-boundaries`, `--eval-steps`, `--save-steps`, `--seed`, `--report-to`, `--debug`, `--print-params`, `--print-mem` |
 | `midtrain.py` | `--base-model`, `--task {arithmetic,code,reasoning,custom}`, `--datasets`, schedule flags (`--epochs`, `--max-steps`, `--learning-rate`, ...), arithmetic: `--reverse-answers`, `--answer-only-loss`, `--accuracy-eval-per-category` |
 | `posttrain.py` | `--base-model`, `--mode {instruction,sft}`, `--datasets` (alpaca, dolly, ultrachat, `.json`/`.jsonl`, a saved dataset, or `synthetic` for smoke tests), `--train-on-prompts`, schedule flags |
 

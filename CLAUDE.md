@@ -65,7 +65,7 @@ The core novelty is `MixedLayerConfig` in `guac/core/custom_architectures.py`, w
 - **BASED**: linear attention with a Taylor feature map and a fixed-size state (`linear_attention.py`)
 - **MLP-only / shared_expert_moe**: no mixer, only the FFN (SwiGLU or MoE)
 
-Generation caches each mixer's state (KV for attention, recurrent states otherwise).
+Generation caches each mixer's state (KV for attention, recurrent states otherwise). `reset_at_document_boundaries` keeps packed documents apart in every mixer (split at EOS; off by default).
 
 ### Three-Stage Training Pipeline
 
