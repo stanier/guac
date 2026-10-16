@@ -69,3 +69,19 @@ def test_checkpoint_at_every_evaluation_by_default(tmp_path):
     assert create_posttraining_arguments(str(tmp_path), 'instruction', {}).save_steps == 100
     with pytest.raises(ValueError, match="multiple"):
         create_posttraining_arguments(str(tmp_path), 'sft', {'eval_steps': 300, 'save_steps': 500})
+
+
+def test_trainer_skips_weight_decay_for_norms_biases_and_mamba_parameters(tmp_path):
+    torch.manual_seed(0)
+    model = MixedLayerForCausalLM(MixedLayerConfig(vocab_size=23, hidden_size=32, num_attention_heads=4,
+                                                   num_hidden_layers=2, layer_types=["mamba2", "full_attention"],
+                                                   intermediate_size=64, mamba_d_state=8, mamba_headdim=8))
+    args = TrainingArguments(output_dir=str(tmp_path), weight_decay=0.1, report_to=[], use_cpu=True)
+    trainer = GuacTrainer(model=model, args=args)
+    trainer.create_optimizer()
+    decay = {id(p): group['weight_decay'] for group in trainer.optimizer.param_groups for p in group['params']}
+    names = dict(model.named_parameters())
+    for name, param in names.items():
+        exempt = name.endswith(('bias', 'A_log', '.D', 'dt_bias')) or 'norm' in name
+        assert decay[id(param)] == (0.0 if exempt else 0.1), name
+    assert any(name.endswith('A_log') for name in names)

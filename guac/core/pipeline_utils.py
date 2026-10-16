@@ -260,7 +260,16 @@ def save_trained_model(
 
 
 class GuacTrainer(Trainer):
-    """Trainer that adds perplexity (exp of the loss) next to every logged loss."""
+    """
+    Trainer that adds perplexity (exp of the loss) next to every logged loss, and
+    exempts biases, norm gains and Mamba-2's A_log, D and dt_bias from weight decay
+    (no_weight_decay_parameter_names; Trainer's default only knows nn.LayerNorm).
+    """
+
+    def get_decay_parameter_names(self, model) -> List[str]:
+        from .custom_architectures import no_weight_decay_parameter_names
+        exempt = no_weight_decay_parameter_names(model)
+        return [name for name, _ in model.named_parameters() if name not in exempt]
 
     def log(self, logs: Dict[str, float], *args, **kwargs) -> None:
         for key in ('loss', 'eval_loss'):

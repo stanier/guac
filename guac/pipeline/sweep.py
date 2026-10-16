@@ -131,10 +131,10 @@ def architecture_settings(spec: Dict[str, Any], name: str) -> Dict[str, Any]:
 
 def load_lm_data(task: Dict[str, Any]) -> Tuple[Any, torch.Tensor, torch.Tensor]:
     """(tokenizer, train blocks, validation blocks) for an 'lm' task, packed to its seq_len."""
-    from transformers import AutoTokenizer
+    from guac.core.pipeline_utils import load_tokenizer, resolve_scratch_path
     from guac.pipeline.pretrain import prepare_pretraining_data
 
-    tokenizer = AutoTokenizer.from_pretrained(task['tokenizer'])
+    tokenizer = load_tokenizer(resolve_scratch_path(task['tokenizer']))
     train, validation = prepare_pretraining_data(task['datasets'], tokenizer, task_seq_len(task), pack=True,
                                                  validation_docs=task.get('validation_docs', 200))
     if validation is None or not hasattr(train, '__len__'):
