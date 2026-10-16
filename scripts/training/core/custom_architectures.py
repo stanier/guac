@@ -14,6 +14,8 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerationMixin
 from typing import Optional, Tuple, Union, List, Dict, Any
 
+from .mamba2 import Mamba2Mixer
+
 
 SUPPORTED_LAYER_TYPES = (
     "full_attention", "conv", "mlp_only", "mamba2", "based",
@@ -384,10 +386,13 @@ class MixedLayerConfig(PretrainedConfig):
         layer_types=None,
         conv_kernel_size=3,
         conv_groups=1,
-        # Mamba-2 specific parameters
-        mamba_d_state=16,
+        # Mamba-2 specific parameters (defaults follow the Mamba-2 paper)
+        mamba_d_state=128,
         mamba_d_conv=4,
         mamba_expand=2,
+        mamba_headdim=64,
+        mamba_ngroups=1,
+        mamba_chunk_size=64,  # Scan chunk length; affects speed and memory, not results
         # BASED specific parameters
         based_feature_dim=16,
         based_num_key_value_heads=None,  # Will default to num_attention_heads
@@ -424,6 +429,9 @@ class MixedLayerConfig(PretrainedConfig):
         self.mamba_d_state = mamba_d_state
         self.mamba_d_conv = mamba_d_conv
         self.mamba_expand = mamba_expand
+        self.mamba_headdim = mamba_headdim
+        self.mamba_ngroups = mamba_ngroups
+        self.mamba_chunk_size = mamba_chunk_size
 
         # BASED parameters - default to main attention config if None
         self.based_feature_dim = based_feature_dim
@@ -460,6 +468,15 @@ class MixedLayerConfig(PretrainedConfig):
             unsupported = sorted(set(self.layer_types) - set(SUPPORTED_LAYER_TYPES))
             if unsupported:
                 raise ValueError(f"Unsupported layer types {unsupported}. Supported types: {list(SUPPORTED_LAYER_TYPES)}")
+
+        if "mamba2" in self.layer_types:
+            mamba_inner = int(mamba_expand * hidden_size)
+            if mamba_inner % mamba_headdim:
+                raise ValueError(f"Mamba-2 inner size {mamba_inner} (mamba_expand * hidden_size) must be "
+                                 f"divisible by mamba_headdim {mamba_headdim}")
+            if (mamba_inner // mamba_headdim) % mamba_ngroups:
+                raise ValueError(f"Mamba-2 head count {mamba_inner // mamba_headdim} must be divisible by "
+                                 f"mamba_ngroups {mamba_ngroups}")
 
 
 class ConvolutionalLayer(nn.Module):
@@ -560,126 +577,25 @@ class GroupedQueryAttention(nn.Module):
 
 class Mamba2Layer(nn.Module):
     """
-    Mamba-2 layer implementation for selective state space modeling.
-    Based on the Mamba-2 architecture for efficient long sequence modeling.
+    Pre-norm residual block around a Mamba-2 mixer (see mamba2.py). Like the
+    original Mamba-2 blocks, it has no separate feed-forward network.
     """
 
     def __init__(self, config):
         super().__init__()
-        self.config = config
-        self.hidden_size = config.hidden_size
-        self.d_state = config.mamba_d_state
-        self.d_conv = config.mamba_d_conv
-        self.expand = config.mamba_expand
-        self.d_inner = int(self.expand * self.hidden_size)
-
-        # Input projection
-        self.in_proj = nn.Linear(self.hidden_size, self.d_inner * 2, bias=False)
-
-        # Convolution
-        self.conv1d = nn.Conv1d(
-            in_channels=self.d_inner,
-            out_channels=self.d_inner,
-            bias=True,
-            kernel_size=self.d_conv,
-            groups=self.d_inner,
-            padding=self.d_conv - 1,
+        self.norm = get_norm_layer(config)
+        self.mixer = Mamba2Mixer(
+            config.hidden_size,
+            d_state=config.mamba_d_state,
+            d_conv=config.mamba_d_conv,
+            expand=config.mamba_expand,
+            headdim=config.mamba_headdim,
+            ngroups=config.mamba_ngroups,
+            chunk_size=config.mamba_chunk_size,
         )
 
-        # State space parameters
-        self.x_proj = nn.Linear(self.d_inner, self.d_state * 2, bias=False)
-        self.dt_proj = nn.Linear(self.d_inner, self.d_inner, bias=True)
-
-        # State space matrices (more stable initialization)
-        A = torch.arange(1, self.d_state + 1, dtype=torch.float32).repeat(self.d_inner, 1)
-        # Use smaller initialization to prevent numerical instability
-        self.A_log = nn.Parameter(torch.log(A) * 0.1)  # Scale down for stability
-        self.D = nn.Parameter(torch.ones(self.d_inner) * 0.1)  # Smaller initialization
-
-        # Output projection
-        self.out_proj = nn.Linear(self.d_inner, self.hidden_size, bias=False)
-
-        # Layer norm
-        self.norm = get_norm_layer(config, self.hidden_size)
-
     def forward(self, hidden_states, attention_mask=None):
-        batch_size, seq_len, hidden_size = hidden_states.shape
-
-        # Layer norm
-        residual = hidden_states
-        hidden_states = self.norm(hidden_states)
-
-        # Input projection
-        xz = self.in_proj(hidden_states)  # (B, L, 2*D)
-        x, z = xz.chunk(2, dim=-1)  # (B, L, D), (B, L, D)
-
-        # Convolution
-        x = x.transpose(1, 2)  # (B, D, L)
-        x = self.conv1d(x)[:, :, :seq_len]  # (B, D, L)
-        x = x.transpose(1, 2)  # (B, L, D)
-
-        # Activation
-        x = F.silu(x)
-
-        # State space operation (simplified version with stability)
-        # In practice, this would use more efficient scan operations
-        A = -torch.exp(torch.clamp(self.A_log.float(), max=5.0))  # (D, N) - clamp to prevent overflow
-
-        # Project to get delta and B, C
-        x_dbl = self.x_proj(x)  # (B, L, 2*N)
-        delta, B = x_dbl.chunk(2, dim=-1)  # (B, L, N)
-        C = B  # Simplified - in real Mamba-2, C comes from different projection
-
-        # Delta projection with stability
-        delta = self.dt_proj(x)  # (B, L, D)
-        delta = F.softplus(delta)
-        delta = torch.clamp(delta, min=1e-8, max=10.0)  # Prevent extreme values
-
-        # Simplified selective scan (not optimized)
-        # Real implementation would use parallel scan
-        y = self._selective_scan(x, delta, A, B, C)
-
-        # Apply D skip connection
-        y = y + self.D.unsqueeze(0).unsqueeze(0) * x
-
-        # Gate with z
-        y = y * F.silu(z)
-
-        # Output projection
-        output = self.out_proj(y)
-
-        return residual + output
-
-    def _selective_scan(self, u, delta, A, B, C):
-        """Simplified selective scan operation."""
-        batch_size, seq_len, d_inner = u.shape
-        d_state = A.shape[1]
-
-        # Initialize state
-        h = torch.zeros(batch_size, d_inner, d_state, device=u.device, dtype=u.dtype)
-        y = torch.zeros_like(u)
-
-        # Sequential scan (not parallel - simplified for implementation)
-        for i in range(seq_len):
-            # Discretize with stability checks
-            exp_arg = A.unsqueeze(0) * delta[:, i].unsqueeze(-1)
-            exp_arg = torch.clamp(exp_arg, min=-10.0, max=10.0)  # Prevent overflow
-            dA = torch.exp(exp_arg)  # (B, D, N)
-            dB = delta[:, i].unsqueeze(-1) * B[:, i].unsqueeze(1)  # (B, D, N)
-
-            # Update state: h = h * dA + dB * u[:, i]
-            # h: (B, D, N), dA: (B, D, N), dB: (B, D, N), u[:, i]: (B, D)
-            h = h * dA + dB * u[:, i].unsqueeze(-1)  # (B, D, N)
-
-            # Check for NaN/Inf and reset if needed
-            if torch.isnan(h).any() or torch.isinf(h).any():
-                h = torch.zeros_like(h)
-
-            # Output: sum over state dimension
-            # h: (B, D, N), C[:, i]: (B, N) -> expand to (B, D, N)
-            y[:, i] = torch.sum(h * C[:, i].unsqueeze(1), dim=-1)  # (B, D)
-
-        return y
+        return hidden_states + self.mixer(self.norm(hidden_states))
 
 
 class BasedLayer(nn.Module):

@@ -16,6 +16,7 @@ import torch
 from scripts.training.core.custom_architectures import (
     SUPPORTED_LAYER_TYPES, MixedLayerConfig, MixedLayerForCausalLM, MixedTransformerLayer,
 )
+from scripts.training.core.pipeline_utils import load_base_model
 
 # Layer types that use softmax attention over a key padding mask
 SOFTMAX_ATTENTION_TYPES = ["full_attention", "flash_attention", "moh_attention"]
@@ -46,6 +47,42 @@ def test_save_load_round_trip_preserves_logits(tmp_path, tie_word_embeddings):
         torch.testing.assert_close(reloaded(input_ids=input_ids).logits, model(input_ids=input_ids).logits)
     shares_storage = reloaded.lm_head.weight.data_ptr() == reloaded.token_embeddings.weight.data_ptr()
     assert shares_storage == tie_word_embeddings
+
+
+def save_model_with_tokenizer(model, path):
+    from tokenizers import Tokenizer, models
+    from transformers import PreTrainedTokenizerFast
+
+    model.save_pretrained(path)
+    vocab = {"[UNK]": 0, "a": 1}
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object=Tokenizer(models.WordLevel(vocab, unk_token="[UNK]")),
+                                        unk_token="[UNK]")
+    tokenizer.save_pretrained(path)
+
+
+def test_load_base_model_round_trip(tmp_path):
+    torch.manual_seed(0)
+    model = MixedLayerForCausalLM(make_config(list(SUPPORTED_LAYER_TYPES))).eval()
+    save_model_with_tokenizer(model, tmp_path)
+
+    loaded, _ = load_base_model(str(tmp_path))
+    input_ids = torch.randint(0, 50, (1, 8))
+    with torch.no_grad():
+        torch.testing.assert_close(loaded.eval()(input_ids=input_ids).logits, model(input_ids=input_ids).logits)
+
+
+def test_load_base_model_rejects_checkpoint_from_other_layer_code(tmp_path):
+    """A renamed weight (as when a layer's implementation changes) must fail, not load half-random."""
+    from safetensors.torch import load_file, save_file
+
+    save_model_with_tokenizer(MixedLayerForCausalLM(make_config(["mamba2"])), tmp_path)
+    weights_path = tmp_path / "model.safetensors"
+    weights = load_file(weights_path)
+    weights["layers.0.mamba_layer.old_name"] = weights.pop("layers.0.mamba_layer.mixer.A_log")
+    save_file(weights, weights_path, metadata={"format": "pt"})
+
+    with pytest.raises(ValueError, match="doesn't match the current model code"):
+        load_base_model(str(tmp_path))
 
 
 def test_tied_model_shares_embeddings_from_construction():

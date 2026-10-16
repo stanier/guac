@@ -66,7 +66,7 @@ The core novelty is `MixedLayerConfig` in `scripts/training/core/custom_architec
 
 ### Key Source Files
 
-- `scripts/training/core/custom_architectures.py` — All layer type implementations
+- `scripts/training/core/custom_architectures.py` — All layer type implementations and the model; Mamba-2's mixer and chunked SSD scan live in `scripts/training/core/mamba2.py`
 - `scripts/training/core/matryoshka_layers.py` — Matryoshka embedding/attention experiments; not imported by any model or pipeline
 - `scripts/training/core/callbacks.py` — Training monitoring, profiling, live inference
 - `scripts/training/core/dataset_utils.py` — Dataset loading, tokenization, caching

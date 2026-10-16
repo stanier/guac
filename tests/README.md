@@ -15,7 +15,8 @@ python -m pytest -k causality                  # tests matching a name
 
 | File | Covers |
 |------|--------|
-| `test_architecture.py` | Save/load round trip (tied and untied embeddings), attention-mask handling for every layer type (all-ones, right padding, left padding), config validation |
+| `test_architecture.py` | Save/load round trip (tied and untied embeddings), `load_base_model` rejecting checkpoints that don't match the current layer code, attention-mask handling for every layer type (all-ones, right padding, left padding), config validation |
+| `test_mamba2.py` | Chunked SSD scan against the sequential recurrence (values and gradients), chunk-size invariance, agreement with transformers' reference `Mamba2Mixer`, initialization ranges |
 | `test_causality.py` | Every layer type is causal: perturbing position t never changes outputs before t |
 | `test_model_configs.py` | Every preset in `model_configs.yaml` builds a valid model config; pretraining uses the config's batch/step settings as given |
 | `test_cache_keys.py` | Tokenized-dataset cache keys change with the tokenizer, dataset settings, sequence length and debug subset |

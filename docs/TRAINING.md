@@ -164,9 +164,12 @@ architecture_defaults:
 
 ```yaml
 # Mamba-2 configuration
-mamba_d_state: 8           # State space dimension (higher = more memory)
-mamba_d_conv: 3            # Convolution kernel size
-mamba_expand: 1.5          # Expansion factor
+mamba_d_state: 128         # State size per head (higher = more memory)
+mamba_d_conv: 4            # Causal convolution kernel size
+mamba_expand: 2            # Inner size = expand * hidden_size
+mamba_headdim: 64          # Head size; inner size must be divisible by it
+mamba_ngroups: 1           # B/C groups shared across heads
+mamba_chunk_size: 64       # Scan chunk length (speed/memory only)
 
 # BASED configuration
 based_feature_dim: 8       # Feature map size (trade-off: accuracy vs speed)

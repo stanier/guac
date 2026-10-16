@@ -80,25 +80,32 @@ class ConvolutionalLayer:
 
 **Purpose**: Selective state space modeling for efficient long-range dependencies.
 
-**Implementation**:
+**Implementation** (`scripts/training/core/mamba2.py`, following Dao & Gu 2024):
 ```python
-class Mamba2Layer:
-    - Input projection (2x expansion)
-    - Depthwise 1D convolution
-    - State space parameters (A, B, C, D, Δ)
-    - Selective scan operation
-    - SiLU gating
-    - Output projection
+class Mamba2Layer:                 # pre-norm residual block, no separate FFN
+    norm -> Mamba2Mixer -> + residual
+
+class Mamba2Mixer:
+    - in_proj -> gate z, input x, B, C (shared by heads within a group), dt per head
+    - Depthwise causal conv1d over x, B, C, then SiLU
+    - Scalar decay per head: A = -exp(A_log), discretized as exp(A * dt),
+      dt = softplus(dt + dt_bias)
+    - Chunked SSD scan + D skip connection
+    - Gated RMSNorm: norm(y * silu(z)), then out_proj
 ```
 
-**Key Components**:
-- **State Space Matrices**: A (transition), B (input), C (output), D (skip)
-- **Selective Mechanism**: Δ (delta) controls state update rates
-- **Scan Operation**: Sequential state updates (can be parallelized)
+**The scan**: the chunked structured state space duality (SSD) algorithm in plain
+PyTorch. Inside each chunk it is a causal, attention-like product; between chunks
+it is a linear recurrence over chunk states. It computes exactly the sequential
+recurrence `h_t = exp(A·dt_t)·h_{t-1} + dt_t·x_t⊗B_t`, `y_t = h_t·C_t + D·x_t`
+(tested against it), runs on any device, and keeps the scan in float32 under
+mixed precision. Parameter names follow the reference implementations
+(mamba_ssm, transformers' `Mamba2Mixer`), and outputs are tested against
+transformers' version.
 
 **Characteristics**:
-- **Complexity**: O(d² + d·s·L) where s=state_dimension
-- **Memory**: O(d·s) for state
+- **Complexity**: O(L·Q·(N+P)) per head for the scan, with chunk length Q, state size N, head size P
+- **Memory**: O(N·P) state per head at inference; linear in L during training
 - **Use Cases**: Long sequences, time series, language modeling
 
 ### 4. BASED Layers
@@ -199,9 +206,12 @@ Each layer type has specific parameters:
 
 ```yaml
 # Mamba-2 parameters
-mamba_d_state: 8          # State space dimension
-mamba_d_conv: 3           # Convolution kernel size
-mamba_expand: 1.5         # Expansion factor
+mamba_d_state: 128        # State size N per head
+mamba_d_conv: 4           # Causal convolution kernel size
+mamba_expand: 2           # Inner size = expand * hidden_size
+mamba_headdim: 64         # Head size P; inner size must be divisible by it
+mamba_ngroups: 1          # B/C groups shared across heads (heads must divide evenly)
+mamba_chunk_size: 64      # Scan chunk length: speed/memory only, results are identical
 
 # BASED parameters
 based_feature_dim: 8      # Feature map dimension
@@ -246,20 +256,14 @@ The mixed architecture is designed to maintain stable gradient flow:
 
 ### Numerical Stability
 
-Several measures ensure stable training:
-
-```python
-# Mamba-2 stability
-A_log = torch.log(A) * 0.1  # Scaled initialization
-delta = torch.clamp(delta, min=1e-8, max=10.0)  # Bounded values
-
-# Attention stability
-attn_scores = torch.clamp(attn_scores, min=-10.0, max=10.0)
-
-# NaN detection and recovery
-if torch.isnan(hidden_states).any():
-    hidden_states = torch.zeros_like(hidden_states)
-```
+- **Mamba-2**: the scan's exponentials and cumulative sums run in float32 even under
+  mixed precision; decays are built from masked cumulative sums rather than
+  differences of large running totals.
+- **Attention**: softmax attention runs through `F.scaled_dot_product_attention`.
+  Positions whose keys are all padding attend to themselves, so masked rows can't
+  produce NaN.
+- **No silent recovery**: NaNs are not reset to zero; a diverging run should fail
+  visibly. The tests check causality, padding handling and save/load for every layer type.
 
 ## 🎯 Design Guidelines
 

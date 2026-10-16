@@ -284,7 +284,9 @@ def load_base_model(model_path: str) -> tuple:
         Tuple of (model, tokenizer)
 
     Raises:
-        ValueError: If model loading fails
+        ValueError: If model loading fails, or if the checkpoint's weights don't
+            match the current architecture code (from_pretrained alone would
+            randomly initialize the missing weights and carry on)
     """
     print(f"Loading base model from {model_path}")
 
@@ -293,11 +295,21 @@ def load_base_model(model_path: str) -> tuple:
         from .custom_architectures import MixedLayerForCausalLM
 
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-        model = MixedLayerForCausalLM.from_pretrained(model_path)
-        print(f"Loaded model with {model.num_parameters():,} parameters")
-        return model, tokenizer
+        model, loading_info = MixedLayerForCausalLM.from_pretrained(model_path, output_loading_info=True)
     except Exception as e:
         raise ValueError(f"Failed to load model from {model_path}: {e}")
+
+    mismatched = {kind: loading_info[kind] for kind in ('missing_keys', 'unexpected_keys', 'mismatched_keys')
+                  if loading_info.get(kind)}
+    if mismatched:
+        details = "\n".join(f"  {kind}: {', '.join(map(str, keys[:5]))}{' ...' if len(keys) > 5 else ''}"
+                            for kind, keys in mismatched.items())
+        raise ValueError(f"Checkpoint at {model_path} doesn't match the current model code, so some weights "
+                         f"would be randomly initialized. It was probably saved by an older version of a layer "
+                         f"type; retrain it.\n{details}")
+
+    print(f"Loaded model with {model.num_parameters():,} parameters")
+    return model, tokenizer
 
 
 def create_standard_data_collator(training_args: TrainingArguments, tokenizer: Any) -> Any:
