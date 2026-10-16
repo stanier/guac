@@ -8,6 +8,8 @@ scratch/
 __pycache__/
 *.pyc
 *.pyo
+build/
+*.egg-info/
 
 # Editors / OS
 .DS_Store

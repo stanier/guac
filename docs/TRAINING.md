@@ -177,10 +177,11 @@ based_num_key_value_heads: 4 # KV heads (≤ num_heads)
 conv_kernel_size: 3        # 1D convolution kernel
 conv_groups: 1             # Depthwise convolution groups
 
-# Flash Attention configuration
-flash_attn_causal: true    # Enable causal masking
-flash_attn_softmax_scale: null # Auto-scale (1/√d)
+# Output head
+tie_word_embeddings: true  # Share the token embedding matrix with lm_head
 ```
+
+All softmax-attention layers (`full_attention`, `flash_attention`, `moh_attention`) are always causal and run through PyTorch's `F.scaled_dot_product_attention`, which uses FlashAttention kernels on supported GPUs and dtypes. The separate `flash-attn` package is not used.
 
 ## 🎯 Training Best Practices
 

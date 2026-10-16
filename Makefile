@@ -50,8 +50,9 @@ help:
 	@echo "  DATASETS=fineweb - Datasets for training"
 	@echo "  DEBUG=false      - Enable debug mode with smaller datasets"
 	@echo "  FORCE_RETOKENIZE=false - Force re-tokenization even if cached"
+	@echo "  PRETRAIN_ARGS=   - Extra pretrain.py flags, e.g. \"--batch-size 8 --grad-accum 4 --max-length 512\""
 	@echo "  MIDTRAIN_ARGS=   - Extra midtrain.py flags, e.g. \"--learning-rate 1e-3 --reverse-answers\""
-	@echo "  MAX_STEPS=       - Override pretrain step budget (default: 1000, or 20 with DEBUG=true)"
+	@echo "  MAX_STEPS=       - Pretrain step budget (default: config's max_steps, else its epochs; 20 with DEBUG=true)"
 
 # Configuration variables
 CONFIG ?= guac-3b
@@ -64,6 +65,7 @@ VOCAB_SIZE ?= 60000
 MAX_LENGTH ?= 1024
 TOKENIZER_PATH ?=
 FORCE_RETOKENIZE ?= false
+PRETRAIN_ARGS ?=
 MIDTRAIN_ARGS ?=
 MAX_STEPS ?=
 
@@ -86,7 +88,7 @@ MAX_STEPS_FLAG = $(if $(MAX_STEPS),--max-steps $(MAX_STEPS),)
 
 # Installation and setup
 install:
-	pip install -e .
+	pip install -e ".[test]"
 	@if [ ! -f site_config.yml ]; then \
 		cp site_config.example.yml site_config.yml; \
 		echo "Created site_config.yml - please configure for your environment"; \
@@ -143,7 +145,7 @@ pretrain:
 		--model-config $(CONFIG) \
 		--datasets $(DATASETS) \
 		--output-dir $(PRETRAIN_DIR) \
-		$(DEBUG_FLAG) $(PROFILING_FLAG) $(RETOKENIZE_FLAG) $(MAX_STEPS_FLAG)
+		$(DEBUG_FLAG) $(PROFILING_FLAG) $(RETOKENIZE_FLAG) $(MAX_STEPS_FLAG) $(PRETRAIN_ARGS)
 	@echo "✅ Pre-training complete: $(PRETRAIN_DIR)"
 
 # Stage 2: Mid-training (task specialization)
@@ -263,12 +265,12 @@ eval-arithmetic:
 # Test installation and basic functionality
 test:
 	@echo "🧪 Running Guac Test Suite..."
-	python tests/run_tests.py
+	python -m pytest
 
 # Test path manager specifically
 test-path:
 	@echo "🧪 Testing Path Manager..."
-	python tests/run_tests.py --test path_manager
+	python -m pytest tests/test_path_manager.py
 
 # Legacy installation test
 test-install:

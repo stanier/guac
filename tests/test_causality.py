@@ -13,19 +13,9 @@ from pathlib import Path
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 
+import pytest
 import torch
-from scripts.training.core.custom_architectures import MixedLayerConfig, MixedTransformerLayer
-
-LAYER_TYPES = [
-    "full_attention",
-    "conv",
-    "mlp_only",
-    "mamba2",
-    "based",
-    "flash_attention",
-    "moh_attention",
-    "shared_expert_moe",
-]
+from scripts.training.core.custom_architectures import SUPPORTED_LAYER_TYPES, MixedLayerConfig, MixedTransformerLayer
 
 SEQ_LEN = 32
 PERTURB_POS = 15
@@ -60,28 +50,10 @@ def check_layer_causality(layer_type):
     return past_diff, self_diff
 
 
-def test_causality():
-    """Assert every layer type is causal."""
-    print("Testing causality of MixedTransformerLayer types")
-    print("=" * 50)
-
-    failures = []
-    for layer_type in LAYER_TYPES:
-        past_diff, self_diff = check_layer_causality(layer_type)
-        ok = past_diff <= TOLERANCE and self_diff > TOLERANCE
-        status = "✅" if ok else "❌"
-        print(f"  {status} {layer_type:<20} past diff: {past_diff:.2e}  self diff: {self_diff:.2e}")
-        if not ok:
-            failures.append(layer_type)
-
-    assert not failures, f"Non-causal layer types: {failures}"
-    print("\n✅ All layer types are causal!")
-    return True
-
-
-if __name__ == "__main__":
-    try:
-        test_causality()
-    except AssertionError as e:
-        print(f"\n❌ {e}")
-        sys.exit(1)
+@pytest.mark.parametrize("layer_type", SUPPORTED_LAYER_TYPES)
+def test_causality(layer_type):
+    """Assert the layer type is causal, and that the perturbation is visible at its own position."""
+    past_diff, self_diff = check_layer_causality(layer_type)
+    assert past_diff <= TOLERANCE, f"{layer_type} leaks future tokens (past diff {past_diff:.2e})"
+    # Otherwise the test proves nothing
+    assert self_diff > TOLERANCE, f"{layer_type} ignores its input (self diff {self_diff:.2e})"

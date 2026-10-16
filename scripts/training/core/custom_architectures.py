@@ -6,7 +6,6 @@ This module provides custom model architectures that can be used alongside
 standard transformers architectures.
 """
 
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,11 +14,43 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerationMixin
 from typing import Optional, Tuple, Union, List, Dict, Any
 
-try:
-    from flash_attn import flash_attn_func
-    FLASH_ATTN_AVAILABLE = True
-except ImportError:
-    FLASH_ATTN_AVAILABLE = False
+
+SUPPORTED_LAYER_TYPES = (
+    "full_attention", "conv", "mlp_only", "mamba2", "based",
+    "flash_attention", "moh_attention", "shared_expert_moe",
+)
+
+
+def causal_attention(query, key, value, attention_mask=None, dropout_p=0.0):
+    """
+    Causal scaled dot-product attention shared by every softmax-attention layer.
+
+    query is (batch, heads, seq, head_dim); key and value are
+    (batch, kv_heads, seq, head_dim) with heads a multiple of kv_heads
+    (grouped-query attention). attention_mask is an optional (batch, seq)
+    key padding mask with 1 for real tokens and 0 for padding.
+
+    F.scaled_dot_product_attention picks a FlashAttention or memory-efficient
+    kernel when the device and dtype support it, and the math kernel otherwise.
+    """
+    num_kv_groups = query.size(1) // key.size(1)
+    if num_kv_groups > 1:
+        key = key.repeat_interleave(num_kv_groups, dim=1)
+        value = value.repeat_interleave(num_kv_groups, dim=1)
+
+    # Without padding the causal mask alone is exact, and is_causal=True lets
+    # PyTorch use its fastest kernels
+    if attention_mask is None or bool(attention_mask.all()):
+        return F.scaled_dot_product_attention(query, key, value, dropout_p=dropout_p, is_causal=True)
+
+    seq_len = query.size(2)
+    allowed = torch.ones(seq_len, seq_len, dtype=torch.bool, device=query.device).tril()
+    allowed = allowed & attention_mask[:, None, None, :].bool()
+    # Always let a position attend to itself so no row is fully masked: a fully
+    # masked row makes softmax return NaN at that padding position, and later
+    # layers spread it to real tokens through 0 * NaN
+    allowed = allowed | torch.eye(seq_len, dtype=torch.bool, device=query.device)
+    return F.scaled_dot_product_attention(query, key, value, attn_mask=allowed, dropout_p=dropout_p)
 
 
 class RMSNorm(nn.Module):
@@ -116,7 +147,7 @@ class BasicMultiHeadAttention(nn.Module):
         self.key = nn.Linear(config.hidden_size, config.hidden_size)
         self.value = nn.Linear(config.hidden_size, config.hidden_size)
 
-        self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+        self.attention_dropout = config.attention_probs_dropout_prob
         self.output_projection = nn.Linear(config.hidden_size, config.hidden_size)
 
     def forward(self, hidden_states, attention_mask=None):
@@ -137,28 +168,10 @@ class BasicMultiHeadAttention(nn.Module):
         key_layer = transpose_for_scores(key_layer)
         value_layer = transpose_for_scores(value_layer)
 
-        # Compute attention scores
-        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
-        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
-
-        # Apply causal mask (lower triangular)
-        causal_mask = torch.tril(torch.ones(seq_length, seq_length, device=hidden_states.device))
-        causal_mask = causal_mask.view(1, 1, seq_length, seq_length)
-        attention_scores = attention_scores.masked_fill(causal_mask == 0, -10000.0)
-
-        # Apply attention mask if provided
-        if attention_mask is not None:
-            # Extend attention mask dimensions
-            extended_attention_mask = attention_mask[:, None, None, :]
-            extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
-            attention_scores = attention_scores + extended_attention_mask
-
-        # Normalize attention scores
-        attention_probs = F.softmax(attention_scores, dim=-1)
-        attention_probs = self.dropout(attention_probs)
-
-        # Apply attention to values
-        context_layer = torch.matmul(attention_probs, value_layer)
+        context_layer = causal_attention(
+            query_layer, key_layer, value_layer, attention_mask,
+            dropout_p=self.attention_dropout if self.training else 0.0,
+        )
 
         # Reshape back
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
@@ -227,8 +240,9 @@ class BasicTransformerForCausalLM(PreTrainedModel, GenerationMixin):
         self.final_layer_norm = get_norm_layer(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        # Initialize weights
-        self.apply(self._init_weights)
+        # Initialize weights and tie lm_head to the token embeddings when
+        # config.tie_word_embeddings is set, matching what from_pretrained does
+        self.post_init()
 
     def _init_weights(self, module):
         """Initialize the weights."""
@@ -378,10 +392,6 @@ class MixedLayerConfig(PretrainedConfig):
         based_feature_dim=16,
         based_num_key_value_heads=None,  # Will default to num_attention_heads
         based_num_heads=None,            # Will default to num_attention_heads
-        # Flash Attention specific parameters
-        use_flash_attention=True,  # Enable Flash Attention by default
-        flash_attn_causal=True,
-        flash_attn_softmax_scale=None,
         pad_token_id=0,
         bos_token_id=1,
         eos_token_id=2,
@@ -417,13 +427,8 @@ class MixedLayerConfig(PretrainedConfig):
 
         # BASED parameters - default to main attention config if None
         self.based_feature_dim = based_feature_dim
-        self.based_num_key_value_heads = based_num_key_value_heads if based_num_key_value_heads is not None else num_kv_heads
+        self.based_num_key_value_heads = based_num_key_value_heads if based_num_key_value_heads is not None else self.num_kv_heads
         self.based_num_heads = based_num_heads if based_num_heads is not None else num_attention_heads
-
-        # Flash Attention parameters
-        self.use_flash_attention = use_flash_attention
-        self.flash_attn_causal = flash_attn_causal
-        self.flash_attn_softmax_scale = flash_attn_softmax_scale
 
         # Rotary Position Embedding parameters
         self.use_rope = kwargs.get('use_rope', True)
@@ -452,6 +457,9 @@ class MixedLayerConfig(PretrainedConfig):
             # Ensure layer_types matches num_hidden_layers
             if len(self.layer_types) != num_hidden_layers:
                 raise ValueError(f"layer_types length ({len(self.layer_types)}) must match num_hidden_layers ({num_hidden_layers})")
+            unsupported = sorted(set(self.layer_types) - set(SUPPORTED_LAYER_TYPES))
+            if unsupported:
+                raise ValueError(f"Unsupported layer types {unsupported}. Supported types: {list(SUPPORTED_LAYER_TYPES)}")
 
 
 class ConvolutionalLayer(nn.Module):
@@ -532,99 +540,22 @@ class GroupedQueryAttention(nn.Module):
         self.v_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(self.num_attention_heads * self.head_dim, self.hidden_size, bias=False)
 
-        self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+        self.attention_dropout = config.attention_probs_dropout_prob
 
     def forward(self, hidden_states, attention_mask=None):
         batch_size, seq_length, _ = hidden_states.shape
 
-        # Linear projections
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
+        query_states = self.q_proj(hidden_states).view(batch_size, seq_length, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        key_states = self.k_proj(hidden_states).view(batch_size, seq_length, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(batch_size, seq_length, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        # Use Flash Attention if available and enabled, otherwise fall back to standard attention
-        if (FLASH_ATTN_AVAILABLE and
-            getattr(self.config, 'use_flash_attention', True) and
-            self.training):
-            return self._flash_attention(query_states, key_states, value_states, attention_mask)
-        else:
-            return self._standard_attention(query_states, key_states, value_states, attention_mask)
-
-    def _flash_attention(self, query_states, key_states, value_states, attention_mask=None):
-        """Use Flash Attention for efficient computation."""
-        batch_size, seq_length, _ = query_states.shape
-
-        # Reshape for Flash Attention (batch, seq_len, num_heads, head_dim)
-        q = query_states.view(batch_size, seq_length, self.num_attention_heads, self.head_dim)
-        k = key_states.view(batch_size, seq_length, self.num_kv_heads, self.head_dim)
-        v = value_states.view(batch_size, seq_length, self.num_kv_heads, self.head_dim)
-
-        # Expand k, v for grouped attention if needed
-        if self.num_kv_groups > 1:
-            k = k.repeat_interleave(self.num_kv_groups, dim=2)
-            v = v.repeat_interleave(self.num_kv_groups, dim=2)
-
-        # Apply Flash Attention
-        causal = getattr(self.config, 'flash_attn_causal', True)
-        softmax_scale = getattr(self.config, 'flash_attn_softmax_scale', None)
-        if softmax_scale is None:
-            softmax_scale = 1.0 / math.sqrt(self.head_dim)
-
-        attn_output = flash_attn_func(
-            q, k, v,
-            dropout_p=self.config.attention_probs_dropout_prob if self.training else 0.0,
-            softmax_scale=softmax_scale,
-            causal=causal
+        attn_output = causal_attention(
+            query_states, key_states, value_states, attention_mask,
+            dropout_p=self.attention_dropout if self.training else 0.0,
         )
 
-        # Reshape and project output
-        attn_output = attn_output.reshape(batch_size, seq_length, self.hidden_size)
+        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_length, self.hidden_size)
         return self.o_proj(attn_output)
-
-    def _standard_attention(self, query_states, key_states, value_states, attention_mask=None):
-        """Fallback to standard attention computation."""
-        batch_size, seq_length, _ = query_states.shape
-
-        # Reshape for attention computation - all use same head_dim
-        query_states = query_states.view(batch_size, seq_length, self.num_attention_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(batch_size, seq_length, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(batch_size, seq_length, self.num_kv_heads, self.head_dim).transpose(1, 2)
-
-        # Expand key and value states for grouped query attention
-        if self.num_kv_groups > 1:
-            key_states = key_states.repeat_interleave(self.num_kv_groups, dim=1)
-            value_states = value_states.repeat_interleave(self.num_kv_groups, dim=1)
-
-        # Compute attention scores
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
-
-        # Apply causal mask with safe large negative value instead of -inf
-        causal_mask = torch.tril(torch.ones(seq_length, seq_length, device=query_states.device))
-        causal_mask = causal_mask.view(1, 1, seq_length, seq_length)
-        attn_weights = attn_weights.masked_fill(causal_mask == 0, -1e4)  # Safe large negative
-
-        # Apply attention mask if provided
-        if attention_mask is not None:
-            extended_attention_mask = attention_mask[:, None, None, :]
-            extended_attention_mask = (1.0 - extended_attention_mask) * -1e4  # Safe large negative
-            attn_weights = attn_weights + extended_attention_mask
-
-        # Clamp attention weights to prevent extreme values
-        attn_weights = torch.clamp(attn_weights, min=-1e4, max=1e4)
-
-        # Softmax and dropout
-        attn_weights = F.softmax(attn_weights, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-
-        # Apply attention to values
-        attn_output = torch.matmul(attn_weights, value_states)
-
-        # Reshape and project
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.view(batch_size, seq_length, self.hidden_size)
-        attn_output = self.o_proj(attn_output)
-
-        return attn_output
 
 
 class Mamba2Layer(nn.Module):
@@ -923,7 +854,7 @@ class MixtureOfHeadAttention(nn.Module):
             nn.Dropout(config.hidden_dropout_prob)
         )
 
-        self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+        self.attention_dropout = config.attention_probs_dropout_prob
 
     def forward(self, hidden_states, attention_mask=None):
         batch_size, seq_len, _ = hidden_states.shape
@@ -958,31 +889,12 @@ class MixtureOfHeadAttention(nn.Module):
         k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        # Expand k, v for grouped attention: Q head i uses KV head i // num_kv_groups
-        if self.num_kv_groups > 1:
-            k = k.repeat_interleave(self.num_kv_groups, dim=1)
-            v = v.repeat_interleave(self.num_kv_groups, dim=1)
-
         # Since heads are selected per token, compute attention for all heads
-        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-
-        # Apply causal mask
-        causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=hidden_states.device))
-        causal_mask = causal_mask.view(1, 1, seq_len, seq_len)
-        attn_scores = attn_scores.masked_fill(causal_mask == 0, -1e4)
-
-        # Apply attention mask if provided
-        if attention_mask is not None:
-            extended_mask = attention_mask[:, None, None, :]
-            extended_mask = (1.0 - extended_mask) * -1e4
-            attn_scores = attn_scores + extended_mask
-
-        # Softmax and dropout
-        attn_weights = F.softmax(attn_scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-
-        # Apply attention to values
-        attn_output = torch.matmul(attn_weights, v)  # [batch_size, num_heads, seq_len, head_dim]
+        # (Q head i uses KV head i // num_kv_groups)
+        attn_output = causal_attention(
+            q, k, v, attention_mask,
+            dropout_p=self.attention_dropout if self.training else 0.0,
+        )  # [batch_size, num_heads, seq_len, head_dim]
 
         # Combine heads with per-token sparse mixture weights (unselected heads get 0)
         attn_output = torch.einsum('bhld,blh->bld', attn_output, head_weights)  # [batch_size, seq_len, head_dim]
@@ -1200,8 +1112,9 @@ class SharedExpertMoE(nn.Module):
 
 class FlashAttentionLayer(nn.Module):
     """
-    Flash Attention layer implementation with fallback to standard attention.
-    Uses Flash Attention when available for memory-efficient attention computation.
+    Pre-norm attention + feed-forward block. Attention runs through
+    F.scaled_dot_product_attention, which uses FlashAttention kernels on
+    supported GPUs and dtypes and falls back to the math kernel elsewhere.
     """
 
     def __init__(self, config):
@@ -1232,7 +1145,7 @@ class FlashAttentionLayer(nn.Module):
             nn.Dropout(config.hidden_dropout_prob)
         )
 
-        self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+        self.attention_dropout = config.attention_probs_dropout_prob
 
     def forward(self, hidden_states, attention_mask=None):
         batch_size, seq_len, _ = hidden_states.shape
@@ -1247,20 +1160,17 @@ class FlashAttentionLayer(nn.Module):
         v = self.v_proj(hidden_states)
 
         # Reshape for attention
-        q = q.view(batch_size, seq_len, self.num_attention_heads, self.head_dim)
-        k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
-        v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        q = q.view(batch_size, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        # Use Flash Attention if available and enabled, otherwise fall back to standard attention
-        if (FLASH_ATTN_AVAILABLE and
-            getattr(self.config, 'use_flash_attention', True) and
-            self.training):
-            attn_output = self._flash_attention(q, k, v, attention_mask)
-        else:
-            attn_output = self._standard_attention(q, k, v, attention_mask)
+        attn_output = causal_attention(
+            q, k, v, attention_mask,
+            dropout_p=self.attention_dropout if self.training else 0.0,
+        )
 
         # Reshape and project output
-        attn_output = attn_output.reshape(batch_size, seq_len, self.hidden_size)
+        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.hidden_size)
         attn_output = self.o_proj(attn_output)
 
         # First residual connection
@@ -1273,72 +1183,6 @@ class FlashAttentionLayer(nn.Module):
         hidden_states = residual + ff_output
 
         return hidden_states
-
-    def _flash_attention(self, q, k, v, attention_mask=None):
-        """Use Flash Attention for efficient computation."""
-        # Flash attention expects (batch, seq_len, num_heads, head_dim) format
-        batch_size, seq_len, num_heads, head_dim = q.shape
-
-        # Expand k, v for grouped attention if needed
-        if self.num_attention_heads != self.num_kv_heads:
-            k = k.repeat_interleave(self.num_attention_heads // self.num_kv_heads, dim=2)
-            v = v.repeat_interleave(self.num_attention_heads // self.num_kv_heads, dim=2)
-
-        # Apply Flash Attention
-        causal = getattr(self.config, 'flash_attn_causal', True)
-        softmax_scale = getattr(self.config, 'flash_attn_softmax_scale', None)
-
-        if softmax_scale is None:
-            softmax_scale = 1.0 / math.sqrt(head_dim)
-
-        attn_output = flash_attn_func(
-            q, k, v,
-            dropout_p=self.config.attention_probs_dropout_prob if self.training else 0.0,
-            softmax_scale=softmax_scale,
-            causal=causal
-        )
-
-        return attn_output
-
-    def _standard_attention(self, q, k, v, attention_mask=None):
-        """Fallback to standard attention computation."""
-        batch_size, seq_len, num_heads, head_dim = q.shape
-
-        # Transpose for attention computation
-        q = q.transpose(1, 2)  # (B, H, L, D)
-        k = k.transpose(1, 2)  # (B, H_kv, L, D)
-        v = v.transpose(1, 2)  # (B, H_kv, L, D)
-
-        # Expand k, v for grouped attention if needed
-        if self.num_attention_heads != self.num_kv_heads:
-            k = k.repeat_interleave(self.num_attention_heads // self.num_kv_heads, dim=1)
-            v = v.repeat_interleave(self.num_attention_heads // self.num_kv_heads, dim=1)
-
-        # Compute attention scores
-        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(head_dim)
-
-        # Apply causal mask
-        causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=q.device))
-        causal_mask = causal_mask.view(1, 1, seq_len, seq_len)
-        attn_scores = attn_scores.masked_fill(causal_mask == 0, float('-inf'))
-
-        # Apply attention mask if provided
-        if attention_mask is not None:
-            extended_mask = attention_mask[:, None, None, :]
-            extended_mask = (1.0 - extended_mask) * float('-inf')
-            attn_scores = attn_scores + extended_mask
-
-        # Softmax and dropout
-        attn_weights = F.softmax(attn_scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-
-        # Apply to values
-        attn_output = torch.matmul(attn_weights, v)
-
-        # Transpose back and ensure contiguity
-        attn_output = attn_output.transpose(1, 2).contiguous()  # (B, L, H, D)
-
-        return attn_output
 
 
 class MixedTransformerLayer(nn.Module):
@@ -1393,7 +1237,7 @@ class MixedTransformerLayer(nn.Module):
             self.moe_layer = SharedExpertMoE(config)
 
         else:
-            raise ValueError(f"Unsupported layer type: {layer_type}. Supported types: 'full_attention', 'conv', 'mlp_only', 'mamba2', 'based', 'flash_attention', 'moh_attention', 'shared_expert_moe'")
+            raise ValueError(f"Unsupported layer type: {layer_type}. Supported types: {list(SUPPORTED_LAYER_TYPES)}")
 
     def forward(self, hidden_states, attention_mask=None):
         if self.layer_type == "full_attention":
@@ -1462,8 +1306,9 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
         self.final_layer_norm = get_norm_layer(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        # Initialize weights
-        self.apply(self._init_weights)
+        # Initialize weights and tie lm_head to the token embeddings when
+        # config.tie_word_embeddings is set, matching what from_pretrained does
+        self.post_init()
 
     def _init_weights(self, module):
         """Initialize the weights."""

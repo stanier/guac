@@ -24,29 +24,29 @@ from transformers import (
     DataCollatorForLanguageModeling, EarlyStoppingCallback,
     TrainerCallback
 )
-from datasets import load_dataset, load_from_disk, concatenate_datasets
+from datasets import load_dataset, load_from_disk, concatenate_datasets, IterableDataset
 
 try:
     from scripts.training.core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
     from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
     from scripts.training.core.pipeline_utils import load_model_config, create_base_training_arguments, create_standard_callbacks, setup_gpu_optimizations, print_training_info, save_model_and_tokenizer, create_cache_dir_name, create_standard_data_collator, get_output_directory, run_training_loop, apply_debug_mode, save_trained_model
-    from scripts.training.core.dataset_utils import load_pretraining_datasets, tokenize_dataset_with_cache
-    from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size
+    from scripts.training.core.dataset_utils import load_pretraining_datasets, tokenize_dataset_with_cache, get_pretraining_dataset_settings
+    from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
 except ImportError:
     try:
         from ..core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
         from ..core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
         from ..core.pipeline_utils import load_model_config, create_base_training_arguments, create_standard_callbacks, setup_gpu_optimizations, print_training_info, save_model_and_tokenizer, create_cache_dir_name, create_standard_data_collator, get_output_directory, run_training_loop, apply_debug_mode, save_trained_model
-        from ..core.dataset_utils import load_pretraining_datasets, tokenize_dataset_with_cache
-        from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size
+        from ..core.dataset_utils import load_pretraining_datasets, tokenize_dataset_with_cache, get_pretraining_dataset_settings
+        from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
     except ImportError:
         parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         sys.path.insert(0, parent_dir)
         from core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
         from core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
         from core.pipeline_utils import load_model_config, create_base_training_arguments, create_standard_callbacks, setup_gpu_optimizations, print_training_info, save_model_and_tokenizer, create_cache_dir_name, create_standard_data_collator, get_output_directory, run_training_loop, apply_debug_mode, save_trained_model
-        from core.dataset_utils import load_pretraining_datasets, tokenize_dataset_with_cache
-        from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size
+        from core.dataset_utils import load_pretraining_datasets, tokenize_dataset_with_cache, get_pretraining_dataset_settings
+        from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
 
 
 def load_tokenizer(config: Dict[str, Any]) -> Any:
@@ -64,7 +64,9 @@ def load_tokenizer(config: Dict[str, Any]) -> Any:
     if tokenizer_path.endswith('.model'):
         tokenizer_path = os.path.dirname(tokenizer_path)
 
-    if not os.path.exists(tokenizer_path):
+    # The path manager creates tokenizer directories up front, so check for a
+    # saved tokenizer rather than for the directory
+    if not os.path.isfile(os.path.join(tokenizer_path, 'tokenizer_config.json')):
         vocab_size = config.get('vocab_size', 60000)
         raise ValueError(
             f"Tokenizer not found at {tokenizer_path}\n"
@@ -353,44 +355,46 @@ class MemoryUsageCallback(TrainerCallback):
             return 0
 
 
-def get_memory_scaling_factor(config: Dict[str, Any]) -> float:
-    """Calculate memory-aware scaling factor for sequence length based on model size."""
-    try:
-        vocab_size = config.get('vocab_size', 60000)
-        hidden_size = config.get('hidden_size', 512)
-        num_layers = config.get('num_hidden_layers', 12)
+def pretraining_cache_key(dataset_names: List[str], tokenizer: Any, max_length: int,
+                          debug_samples: Optional[int] = None) -> str:
+    """
+    Cache key for a tokenized pre-training dataset.
 
-        embedding_params = vocab_size * hidden_size
-        layer_params = num_layers * (4 * hidden_size * hidden_size)
-        total_params = embedding_params + layer_params
+    The readable part names the datasets (by basename, for on-disk paths),
+    vocab size and sequence length. The hash covers everything else that
+    changes the tokenized content: the tokenizer itself, each dataset's full
+    name and site_config.yml settings, and the debug subset, so a --debug run
+    never fills the cache used by full runs.
+    """
+    names = '_'.join(sorted(Path(name).name for name in dataset_names))
+    readable = f"{names}_vocab{get_vocab_size(tokenizer)}_len{max_length}"
+    if debug_samples is not None:
+        readable += f"_debug{debug_samples}"
+    settings = {
+        'tokenizer': tokenizer_fingerprint(tokenizer),
+        'datasets': get_pretraining_dataset_settings(dataset_names),
+        'max_length': max_length,
+        'debug_samples': debug_samples,
+    }
+    return f"{readable}_{content_hash(settings)}"
 
-        if total_params < 10_000_000:
-            scale = 1.0
-        elif total_params < 100_000_000:
-            scale = 1.0 - 0.3 * (total_params - 10_000_000) / (100_000_000 - 10_000_000)
-        elif total_params < 1_000_000_000:
-            scale = 0.7 - 0.4 * (total_params - 100_000_000) / (1_000_000_000 - 100_000_000)
-        else:
-            scale = max(0.1, 0.3 - 0.2 * min(1.0, (total_params - 1_000_000_000) / 9_000_000_000))
 
-        if torch.cuda.is_available():
-            try:
-                total_memory = torch.cuda.get_device_properties(0).total_memory
-                memory_gb = total_memory / (1024**3)
-                if memory_gb < 8:
-                    scale *= 0.5
-                elif memory_gb < 16:
-                    scale *= 0.7
-                elif memory_gb >= 32:
-                    scale *= 1.2
-                scale = min(scale, 1.0)
-            except Exception:
-                pass
-
-        return max(scale, 0.1)
-
-    except Exception:
-        return 1.0
+def build_model_config(config: Dict[str, Any], vocab_size: int) -> MixedLayerConfig:
+    """Build the MixedLayerConfig for a model_configs.yaml entry (validates layer types)."""
+    return MixedLayerConfig(
+        vocab_size=vocab_size,
+        hidden_size=config['hidden_size'],
+        num_hidden_layers=config['num_hidden_layers'],
+        num_attention_heads=config['num_attention_heads'],
+        num_kv_heads=config.get('num_kv_heads', config['num_attention_heads']),
+        intermediate_size=config.get('intermediate_size', config['hidden_size'] * 4),
+        max_position_embeddings=config.get('max_position_embeddings', 4096),
+        layer_types=config.get('layer_types'),  # None -> all full_attention
+        use_rms_norm=config.get('use_rms_norm', True),
+        layer_norm_eps=config.get('layer_norm_eps', 1e-6),
+        tie_word_embeddings=config.get('tie_word_embeddings', True),
+        **{k: v for k, v in config.items() if k.startswith(('num_experts', 'num_shared_experts', 'moe_', 'moh_'))}
+    )
 
 
 def create_model(config: Dict[str, Any], tokenizer: Any, print_params: bool = False) -> Any:
@@ -398,22 +402,7 @@ def create_model(config: Dict[str, Any], tokenizer: Any, print_params: bool = Fa
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    model_config = MixedLayerConfig(
-        vocab_size=len(tokenizer),
-        hidden_size=config['hidden_size'],
-        num_hidden_layers=config['num_hidden_layers'],
-        num_attention_heads=config['num_attention_heads'],
-        num_kv_heads=config.get('num_kv_heads', config['num_attention_heads']),
-        intermediate_size=config.get('intermediate_size', config['hidden_size'] * 4),
-        max_position_embeddings=config.get('max_position_embeddings', 4096),
-        layer_types=config.get('layer_types', ['attention'] * config['num_hidden_layers']),
-        use_rms_norm=config.get('use_rms_norm', True),
-        use_flash_attention=config.get('use_flash_attention', True),
-        layer_norm_eps=config.get('layer_norm_eps', 1e-6),
-        **{k: v for k, v in config.items() if k.startswith(('num_experts', 'moe_', 'moh_'))}
-    )
-
-    model = MixedLayerForCausalLM(model_config)
+    model = MixedLayerForCausalLM(build_model_config(config, len(tokenizer)))
     print(f"Created model with {model.num_parameters():,} parameters")
 
     if print_params:
@@ -427,15 +416,19 @@ def create_model(config: Dict[str, Any], tokenizer: Any, print_params: bool = Fa
     return model
 
 
-def create_training_arguments(config: Dict[str, Any], output_dir: str, max_steps: int = 1000) -> TrainingArguments:
-    """Create training arguments from config."""
+def create_training_arguments(config: Dict[str, Any], output_dir: str, max_steps: int = -1) -> TrainingArguments:
+    """
+    Create training arguments from config, using its values as given.
+
+    max_steps <= 0 trains for config['num_train_epochs'] instead.
+    """
     return TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=config.get('num_train_epochs', 1),
         max_steps=max_steps,
-        per_device_train_batch_size=min(config.get('pdbs_train', 16), 8),
-        per_device_eval_batch_size=min(config.get('pdbs_eval', 16), 8),
-        gradient_accumulation_steps=max(config.get('grad_accum_steps', 6), 4),
+        per_device_train_batch_size=config.get('pdbs_train', 16),
+        per_device_eval_batch_size=config.get('pdbs_eval', 16),
+        gradient_accumulation_steps=config.get('grad_accum_steps', 1),
         learning_rate=float(config.get('learning_rate', 8e-4)),
         weight_decay=float(config.get('weight_decay', 0.01)),
         warmup_ratio=float(config.get('warmup_ratio', 0.05)),
@@ -454,6 +447,30 @@ def create_training_arguments(config: Dict[str, Any], output_dir: str, max_steps
         report_to=[],
         seed=42,
     )
+
+
+def print_training_settings(training_args: TrainingArguments, max_length: int, train_dataset: Any) -> None:
+    """Print the settings training will actually use."""
+    per_device = training_args.per_device_train_batch_size
+    grad_accum = training_args.gradient_accumulation_steps
+    effective_batch = per_device * grad_accum * training_args.world_size
+    if training_args.max_steps > 0:
+        duration = f"{training_args.max_steps:,} steps"
+    else:
+        duration = f"{training_args.num_train_epochs:g} epochs"
+        if not isinstance(train_dataset, IterableDataset):
+            steps_per_epoch = len(train_dataset) // (per_device * training_args.world_size) // grad_accum
+            duration += f" (~{steps_per_epoch:,} steps each)"
+
+    print("Training settings:")
+    print(f"  Sequence length:      {max_length}")
+    print(f"  Batch per device:     {per_device}")
+    print(f"  Grad accumulation:    {grad_accum}")
+    print(f"  Devices:              {training_args.world_size}")
+    print(f"  Effective batch:      {effective_batch} sequences (up to {effective_batch * max_length:,} tokens/step)")
+    print(f"  Learning rate:        {training_args.learning_rate:g} ({training_args.lr_scheduler_type.value}, "
+          f"warmup ratio {training_args.warmup_ratio:g})")
+    print(f"  Duration:             {duration}")
 
 
 def create_callbacks(config: Dict[str, Any], tokenizer: Any, enable_profiling: bool = False,
@@ -499,7 +516,12 @@ def main():
     parser.add_argument('--debug', action='store_true',
                        help='Enable debug mode with smaller dataset')
     parser.add_argument('--max-steps', type=int, default=None,
-                       help='Override the training step budget (default: 1000, or 20 with --debug)')
+                       help="Optimizer steps to train for (default: the config's max_steps if set, "
+                            "else num_train_epochs; 20 with --debug)")
+    parser.add_argument('--batch-size', type=int, default=None,
+                       help="Per-device batch size (default: the config's pdbs_train)")
+    parser.add_argument('--grad-accum', type=int, default=None,
+                       help="Gradient accumulation steps (default: the config's grad_accum_steps)")
 
     args = parser.parse_args()
 
@@ -508,6 +530,10 @@ def main():
 
     if args.vocab_size:
         config['vocab_size'] = args.vocab_size
+    if args.batch_size is not None:
+        config['pdbs_train'] = args.batch_size
+    if args.grad_accum is not None:
+        config['grad_accum_steps'] = args.grad_accum
 
     dataset_names = args.datasets.split(',')
 
@@ -515,26 +541,17 @@ def main():
 
     dataset = load_pretraining_datasets(dataset_names)
 
+    debug_samples = None
     if args.debug:
         print("Debug mode: using smaller dataset")
         if hasattr(dataset, 'select'):
-            dataset = dataset.select(range(min(1000, len(dataset))))
+            debug_samples = min(1000, len(dataset))
+            dataset = dataset.select(range(debug_samples))
 
     if args.max_length is not None: max_length = args.max_length
     else: max_length = config.get('max_sequence_length', 1024)
 
-    memory_scaling_factor = get_memory_scaling_factor(config)
-    if memory_scaling_factor < 1.0:
-        original_max_length = max_length
-        max_length = int(max_length * memory_scaling_factor)
-        print(f"Memory scaling: {original_max_length} -> {max_length} (factor: {memory_scaling_factor:.2f})")
-
-    max_length = max(max_length, 128)
-    print(f"Sequence length: {max_length}")
-
-    dataset_key = "_".join(sorted(dataset_names))
-    vocab_size = get_vocab_size(tokenizer)
-    cache_key = f"{dataset_key}_vocab{vocab_size}_len{max_length}"
+    cache_key = pretraining_cache_key(dataset_names, tokenizer, max_length, debug_samples)
     cache_dir = get_cache_directory("pretraining", cache_key)
 
     tokenized_dataset = tokenize_dataset_with_cache(
@@ -552,8 +569,12 @@ def main():
     elif args.debug:
         max_steps = 20
     else:
-        max_steps = 1000
+        max_steps = config.get('max_steps', -1)
+    if max_steps <= 0 and isinstance(train_dataset, IterableDataset):
+        raise ValueError("Streaming datasets have no length, so training can't be measured in epochs. "
+                         "Pass --max-steps (MAX_STEPS= with make) or set max_steps in the model config.")
     training_args = create_training_arguments(config, output_dir, max_steps)
+    print_training_settings(training_args, max_length, train_dataset)
     callbacks = create_callbacks(config, tokenizer, args.enable_profiling, args.print_mem, train_dataset)
 
     data_collator = DataCollatorForLanguageModeling(

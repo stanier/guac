@@ -8,8 +8,7 @@ require actual dataset I/O).  extract_tokens_from_model is integration-only
 and not covered here.
 
 Usage:
-    python tests/test_vocab_pipeline.py
-    python tests/run_tests.py --test vocab_pipeline
+    python -m pytest tests/test_vocab_pipeline.py
 """
 
 import io

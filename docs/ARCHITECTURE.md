@@ -133,8 +133,8 @@ class BasedLayer:
 ```python
 class FlashAttentionLayer:
     - Standard Q/K/V projections
-    - Flash Attention kernel (if available)
-    - Fallback to standard attention
+    - torch F.scaled_dot_product_attention: FlashAttention kernels on
+      supported GPUs/dtypes, math kernel elsewhere (CPU included)
     - Grouped query attention support
 ```
 

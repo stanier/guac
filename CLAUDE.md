@@ -31,9 +31,8 @@ make posttrain
 
 **Tests:**
 ```bash
-make test
-python tests/run_tests.py
-python tests/run_tests.py --test path_manager   # Single test module
+make test                                      # python -m pytest
+python -m pytest tests/test_path_manager.py    # Single test module
 ```
 
 **Utilities:**
@@ -68,7 +67,7 @@ The core novelty is `MixedLayerConfig` in `scripts/training/core/custom_architec
 ### Key Source Files
 
 - `scripts/training/core/custom_architectures.py` — All layer type implementations
-- `scripts/training/core/matryoshka_layers.py` — Layer type definitions
+- `scripts/training/core/matryoshka_layers.py` — Matryoshka embedding/attention experiments; not imported by any model or pipeline
 - `scripts/training/core/callbacks.py` — Training monitoring, profiling, live inference
 - `scripts/training/core/dataset_utils.py` — Dataset loading, tokenization, caching
 - `scripts/training/core/path_manager.py` — Centralized path resolution from `site_config.yml`
@@ -95,4 +94,4 @@ python hf_partial_download.py --csv datasets_download.csv
 
 ## Testing
 
-Tests live in `tests/`. They cover path manager, architecture config loading, site config parsing, tokenizer, and mixture-of-heads layers. No external services required for unit tests.
+Tests live in `tests/` and run with pytest on CPU, with no GPU, network or trained artifacts needed; CI runs them on every push. They cover model save/load round trips, attention-mask handling and causality for every layer type, preset validity in `model_configs.yaml`, cache keys, the path manager, the tokenizer vocab pipeline, and mixture-of-heads layers. See `tests/README.md`.

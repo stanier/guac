@@ -105,9 +105,8 @@ def test_path_manager():
     else:
         print("\n❌ Some paths are not under SCRATCH_DIR - configuration issue!")
 
-    return all_under_scratch
+    assert all_under_scratch, "Some paths are not under SCRATCH_DIR"
 
 
 if __name__ == "__main__":
-    success = test_path_manager()
-    sys.exit(0 if success else 1)
+    test_path_manager()

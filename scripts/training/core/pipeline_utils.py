@@ -59,19 +59,16 @@ def create_base_training_arguments(
     stage: str = "pretrain",
     enable_evaluation: bool = False
 ) -> TrainingArguments:
-    """Create base training arguments with memory optimizations."""
+    """Create base training arguments, using the config's batch settings as given."""
 
-    # Memory-safe batch sizes (capped for 1080 Ti)
-    train_batch_size = min(config.get('pdbs_train', 16), 8)
-    eval_batch_size = min(config.get('pdbs_eval', 16), 8)
-
-    # Increase gradient accumulation to compensate for smaller batch sizes
-    grad_accum = max(config.get('grad_accum_steps', 6), 4)
+    train_batch_size = config.get('pdbs_train', 16)
+    eval_batch_size = config.get('pdbs_eval', 16)
+    grad_accum = config.get('grad_accum_steps', 1)
 
     # Adjust settings based on stage
     if stage == "pretrain":
-        # Pre-training: Longer, no evaluation
-        max_steps = 1000
+        # Pre-training: config's max_steps if set, else epochs; no evaluation
+        max_steps = config.get('max_steps', -1)
         num_epochs = config.get('num_train_epochs', 1)
         learning_rate = float(config.get('learning_rate', 8e-4))
         eval_strategy = "no"

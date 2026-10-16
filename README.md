@@ -32,9 +32,14 @@ make pretrain
 make midtrain
 make posttrain
 
-# Quick smoke test: cap pre-training at a handful of steps instead of the full budget
-# (DEBUG=true alone only shrinks the dataset; step count still defaults to 1000, or 20 with DEBUG=true)
+# Quick smoke test: cap pre-training at a handful of steps.
+# Training length comes from the config (max_steps if set, else num_train_epochs);
+# DEBUG=true also shrinks the dataset and caps training at 20 steps; MAX_STEPS overrides both.
 make pretrain CONFIG=guac-106m DEBUG=true MAX_STEPS=5
+
+# Batch size, grad accumulation and sequence length come from the config as given
+# (pretrain.py prints the values it uses); override them per run with PRETRAIN_ARGS
+make pretrain PRETRAIN_ARGS="--batch-size 8 --grad-accum 4 --max-length 512"
 
 # Legacy shortcuts (still wired to the pipeline scripts)
 make debug   # guac-3b config, debug mode

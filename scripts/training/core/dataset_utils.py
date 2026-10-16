@@ -10,6 +10,11 @@ import os
 from typing import Any, List, Dict, Optional
 from datasets import load_dataset, load_from_disk, concatenate_datasets, Dataset
 
+try:
+    from .cache_utils import is_saved_dataset
+except ImportError:
+    from scripts.training.core.cache_utils import is_saved_dataset
+
 
 def _get_pretraining_dataset_configs() -> Dict[str, Any]:
     """Look up HF dataset definitions (fineweb, fineweb-edu, etc.) from site_config.yml."""
@@ -85,6 +90,18 @@ def load_pretraining_datasets(dataset_names: List[str]) -> Any:
         return concatenate_datasets(datasets)
 
 
+def get_pretraining_dataset_settings(dataset_names: List[str]) -> Dict[str, Any]:
+    """
+    Settings that determine each dataset's content, for use in cache keys.
+
+    Datasets defined in site_config.yml map to their full entry (HF name,
+    config, max_articles, text field, ...); built-in and on-disk datasets map
+    to their name.
+    """
+    hf_dataset_configs = _get_pretraining_dataset_configs()
+    return {name: hf_dataset_configs.get(name, name) for name in sorted(dataset_names)}
+
+
 def tokenize_dataset_with_cache(
     dataset: Any,
     tokenizer: Any,
@@ -94,7 +111,7 @@ def tokenize_dataset_with_cache(
 ) -> Any:
     """Tokenize dataset with caching support."""
     # Check if cached version exists
-    if os.path.exists(cache_dir) and not force_retokenize:
+    if is_saved_dataset(cache_dir) and not force_retokenize:
         print(f"📦 Loading cached tokenized dataset from {cache_dir}")
         try:
             cached_dataset = load_from_disk(cache_dir)

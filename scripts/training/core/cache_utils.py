@@ -5,6 +5,8 @@ Cache utilities for Guac training pipeline.
 Provides unified caching functionality for tokenized datasets across all training stages.
 """
 
+import hashlib
+import json
 import os
 from typing import Any, Optional
 from datasets import load_from_disk
@@ -28,6 +30,16 @@ def get_cache_directory(cache_type: str, cache_key: str) -> str:
         return f"./tokenized_cache_{cache_key}"
 
 
+def is_saved_dataset(path: str) -> bool:
+    """
+    Check whether a directory holds a dataset written by save_to_disk.
+
+    Cache directories are created empty before anything is saved into them,
+    so the directory existing is not enough.
+    """
+    return any(os.path.isfile(os.path.join(path, name)) for name in ('state.json', 'dataset_dict.json'))
+
+
 def load_cached_dataset(cache_dir: str, force_retokenize: bool = False) -> Optional[Any]:
     """
     Load cached dataset if it exists and force_retokenize is False.
@@ -39,7 +51,7 @@ def load_cached_dataset(cache_dir: str, force_retokenize: bool = False) -> Optio
     Returns:
         Loaded dataset or None if cache doesn't exist or failed to load
     """
-    if not os.path.exists(cache_dir) or force_retokenize:
+    if not is_saved_dataset(cache_dir) or force_retokenize:
         return None
 
     print(f"Loading cached dataset from {cache_dir}")
@@ -79,3 +91,50 @@ def get_vocab_size(tokenizer: Any) -> Any:
         Vocabulary size (int) or 'unknown' if unavailable
     """
     return len(tokenizer) if hasattr(tokenizer, '__len__') else 'unknown'
+
+
+def content_hash(value: Any, length: int = 10) -> str:
+    """
+    Short, stable hash of a string or JSON-serializable value, for cache keys.
+
+    Args:
+        value: String, or value to serialize as JSON with sorted keys
+        length: Number of hex characters to keep
+
+    Returns:
+        Hex digest prefix
+    """
+    text = value if isinstance(value, str) else json.dumps(value, sort_keys=True, default=str)
+    return hashlib.sha1(text.encode('utf-8')).hexdigest()[:length]
+
+
+def tokenizer_fingerprint(tokenizer: Any) -> str:
+    """
+    Hash identifying a tokenizer's behavior, so caches built with one tokenizer
+    are never reused with another that happens to have the same vocab size.
+
+    Fast tokenizers are hashed from their full serialized definition (vocab,
+    normalizer, pre-tokenizer, post-processor); others from vocab and special tokens.
+
+    Args:
+        tokenizer: Tokenizer instance
+
+    Returns:
+        Hex digest prefix
+    """
+    backend = getattr(tokenizer, 'backend_tokenizer', None)
+    description = backend.to_str() if backend is not None else json.dumps(sorted(tokenizer.get_vocab().items()))
+    return content_hash(description + json.dumps(tokenizer.special_tokens_map, sort_keys=True, default=str))
+
+
+def tokenizer_cache_tag(tokenizer: Any) -> str:
+    """
+    Readable cache-key fragment naming a tokenizer, e.g. 'vocab100_tok3fa2b1c9'.
+
+    Args:
+        tokenizer: Tokenizer instance
+
+    Returns:
+        Vocab size plus a short tokenizer fingerprint
+    """
+    return f"vocab{get_vocab_size(tokenizer)}_tok{tokenizer_fingerprint(tokenizer)[:8]}"

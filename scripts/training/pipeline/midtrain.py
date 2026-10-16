@@ -36,7 +36,7 @@ try:
     from scripts.training.core.arithmetic import (
         CATEGORIES, generate_problems, format_answer, save_format, evaluate_accuracy
     )
-    from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size
+    from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
     from scripts.training.core.pipeline_utils import (
         load_base_model, create_standard_data_collator, get_output_directory,
         run_training_loop, apply_debug_mode, save_trained_model
@@ -48,7 +48,7 @@ except ImportError:
         from ..core.arithmetic import (
             CATEGORIES, generate_problems, format_answer, save_format, evaluate_accuracy
         )
-        from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size
+        from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
         from ..core.pipeline_utils import (
             load_base_model, create_standard_data_collator, get_output_directory,
             run_training_loop, apply_debug_mode, save_trained_model
@@ -61,7 +61,7 @@ except ImportError:
         from core.arithmetic import (
             CATEGORIES, generate_problems, format_answer, save_format, evaluate_accuracy
         )
-        from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size
+        from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
         from core.pipeline_utils import (
             load_base_model, create_standard_data_collator, get_output_directory,
             run_training_loop, apply_debug_mode, save_trained_model
@@ -81,8 +81,7 @@ def create_arithmetic_dataset(tokenizer: Any, num_samples: int = 50000, force_re
     """
     from datasets import Dataset
 
-    vocab_size = get_vocab_size(tokenizer)
-    cache_key = (f"arithmetic_vocab{vocab_size}_samples{num_samples}"
+    cache_key = (f"arithmetic_{tokenizer_cache_tag(tokenizer)}_samples{num_samples}"
                  f"{'_heldout' if held_out else '_train'}"
                  f"{'_rev' if reverse_answers else ''}{'_ansloss' if answer_only_loss else ''}_seed{seed}")
     cache_dir = get_cache_directory("midtraining", cache_key)
@@ -216,8 +215,7 @@ def create_reasoning_dataset(tokenizer: Any, force_retokenize: bool = False) -> 
     """Create reasoning dataset for mid-training with caching support."""
     from datasets import Dataset
 
-    vocab_size = get_vocab_size(tokenizer)
-    cache_key = f"reasoning_vocab{vocab_size}_samples5000"
+    cache_key = f"reasoning_{tokenizer_cache_tag(tokenizer)}_samples5000"
     cache_dir = get_cache_directory("midtraining", cache_key)
 
     cached = load_cached_dataset(cache_dir, force_retokenize)

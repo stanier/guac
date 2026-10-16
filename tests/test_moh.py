@@ -92,8 +92,6 @@ def test_moh_attention():
 
     print("\n✅ MoH attention test completed successfully!")
 
-    return True
-
 def compare_efficiency():
     """Compare parameter efficiency between standard attention and MoH."""
 
