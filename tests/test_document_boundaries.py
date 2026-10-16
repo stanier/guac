@@ -103,6 +103,34 @@ def test_generation_ignores_the_setting():
         model(input_ids=packed, use_cache=True, document_ids=documents_from_eos(packed, EOS))
 
 
+def test_plain_forward_in_eval_mode_keeps_documents_apart():
+    """
+    config.use_cache made model(input_ids) build a cache in eval mode, and a
+    cache turns the document resets off, so its logits silently differed from
+    model(input_ids, labels=input_ids) and use_cache=False.
+    """
+    model = make_model(list(SUPPORTED_LAYER_TYPES), reset_at_document_boundaries=True, eos_token_id=EOS)
+    _, packed = packed_documents(LENGTHS)
+    with torch.no_grad():
+        out = model(input_ids=packed)
+        uncached = model(input_ids=packed, use_cache=False).logits
+        with_labels = model(input_ids=packed, labels=packed).logits
+    assert out.past_key_values is None
+    torch.testing.assert_close(out.logits, uncached)
+    torch.testing.assert_close(out.logits, with_labels)
+
+
+def test_generate_still_uses_a_cache_with_the_setting():
+    """generate() asks for a cache, so it decodes as a model without the setting does."""
+    kwargs = dict(reset_at_document_boundaries=True, eos_token_id=EOS)
+    model = make_model(["full_attention", "mamba2", "based", "conv"], **kwargs)
+    plain = make_model(["full_attention", "mamba2", "based", "conv"], eos_token_id=EOS)
+    _, packed = packed_documents([4, 5])
+    generate = dict(max_new_tokens=6, do_sample=False, pad_token_id=0, eos_token_id=None)
+    with torch.no_grad():
+        assert torch.equal(model.generate(packed, **generate), plain.generate(packed, **generate))
+
+
 def test_setting_survives_save_and_load(tmp_path):
     model = make_model(["conv"], reset_at_document_boundaries=True, eos_token_id=EOS)
     model.save_pretrained(tmp_path)

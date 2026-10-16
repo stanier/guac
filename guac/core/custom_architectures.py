@@ -1280,10 +1280,15 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
         absolute positions restart at each document. With
         config.reset_at_document_boundaries they come from input_ids, each
         document ending at its eos_token_id. Either way they apply only without
-        a cache; generation ignores document boundaries.
+        a cache; generation ignores document boundaries. So with that setting a
+        call that doesn't pass use_cache or past_key_values builds no cache
+        (config.use_cache doesn't apply), and model(input_ids) keeps documents
+        apart in eval mode as in training; generate() asks for a cache explicitly.
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        if use_cache is None:
+            use_cache = self.config.use_cache and not (
+                self.config.reset_at_document_boundaries and past_key_values is None)
         if self.training or labels is not None:
             use_cache = False
         if use_cache and past_key_values is None:
