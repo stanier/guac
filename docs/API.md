@@ -110,15 +110,29 @@ class MixedTransformerLayer(nn.Module):
         """Builds layer `layer_idx`: config.layer_types[layer_idx] picks the mixer,
         config.ffn_types[layer_idx] and config.ffn_hidden_sizes[layer_idx] the FFN."""
 
-    def forward(self, hidden_states, attention_mask=None):
+    def forward(self, hidden_states, attention_mask=None, cache=None):
         # h = x + mixer(mixer_norm(x))   (no mixer for mlp_only, shared_expert_moe)
         # y = h + ffn(ffn_norm(h))       (no FFN when the FFN type is "none")
 ```
 
 ### Mixers
 
-Each takes `(hidden_states, attention_mask=None)` and returns a tensor of the same
-shape, `[batch, seq_len, hidden_size]`. They are registered in `MIXERS`.
+Each takes `(hidden_states, attention_mask=None, cache=None)` and returns a tensor
+of the same shape, `[batch, seq_len, hidden_size]`. They are registered in `MIXERS`.
+`attention_mask` is `[batch, total_len]` (it includes cached tokens during
+generation); padding never reaches real tokens, left padding included. `cache` is
+the layer's `LayerCache` during generation, else `None`.
+
+### Generation
+
+`model.generate(...)` keeps per-layer state in a `MixedLayerCache` (returned as
+`past_key_values`) and feeds one new token per step. Attention layers cache keys
+and values (sliding-window layers only the last `sliding_window_size - 1`); conv,
+Mamba-2 and BASED layers keep fixed-size recurrent states. Batched prompts should
+be left-padded with an `attention_mask`. The cache is on by default
+(`config.use_cache`) and is never built in training or when `labels` are given.
+`tests/test_generation.py` checks that token-by-token decoding matches a full
+forward pass for every layer type.
 
 | Layer type | Mixer | Config parameters |
 |------------|-------|-------------------|

@@ -19,6 +19,7 @@ when a GPU and mamba_ssm are available).
 """
 
 import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -35,6 +36,22 @@ def load_mamba_ssm_scan():
         raise ImportError("mamba_scan_impl='mamba_ssm' needs the mamba_ssm package (pip install mamba-ssm, "
                           "which needs a CUDA toolchain)") from e
     return mamba_chunk_scan_combined
+
+
+def causal_conv1d(x: torch.Tensor, conv: nn.Conv1d, state: Optional[torch.Tensor] = None):
+    """
+    Causal 1D convolution of x (batch, channels, length) with conv's weights.
+
+    state holds the kernel_size - 1 inputs before x (zeros at the start of a
+    sequence). Returns the output (batch, out_channels, length) and the last
+    kernel_size - 1 inputs, the state for continuing the sequence.
+    """
+    context = conv.kernel_size[0] - 1
+    if state is None:
+        state = x.new_zeros(x.size(0), x.size(1), context)
+    x = torch.cat([state.to(x.dtype), x], dim=-1)
+    output = F.conv1d(x, conv.weight, conv.bias, groups=conv.groups)
+    return output, x[:, :, x.size(-1) - context:]
 
 
 def segment_sum(x: torch.Tensor) -> torch.Tensor:
@@ -56,9 +73,10 @@ def segment_sum(x: torch.Tensor) -> torch.Tensor:
 
 
 def ssd_chunked(x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, c: torch.Tensor,
-                chunk_size: int) -> torch.Tensor:
+                chunk_size: int, initial_state: Optional[torch.Tensor] = None,
+                return_final_state: bool = False):
     """
-    Chunked SSD scan. For each head, with h_0 = 0, computes
+    Chunked SSD scan. For each head, starting from h_0 (zeros by default), computes
 
         h_t = exp(a_t) * h_{t-1} + outer(x_t, b_t)    (h_t is head_dim x state_size)
         y_t = h_t @ c_t
@@ -69,9 +87,11 @@ def ssd_chunked(x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, c: torch.Tens
         b: (batch, length, heads, state_size) input projections
         c: (batch, length, heads, state_size) output projections
         chunk_size: Tokens per chunk
+        initial_state: Optional h_0, (batch, heads, head_dim, state_size)
+        return_final_state: Also return h after the last token
 
     Returns:
-        y: (batch, length, heads, head_dim)
+        y: (batch, length, heads, head_dim), and the final state if requested
     """
     batch, length, heads, head_dim = x.shape
     pad = (-length) % chunk_size
@@ -95,16 +115,35 @@ def ssd_chunked(x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, c: torch.Tens
     decay_to_end = torch.exp(a_cumsum[..., -1:] - a_cumsum)
     chunk_states = torch.einsum('bclhn,bhcl,bclhp->bchpn', b, decay_to_end, x)
 
-    # 3. State entering each chunk: earlier chunks' states, decayed across the chunks in between
-    chunk_states = torch.cat([torch.zeros_like(chunk_states[:, :1]), chunk_states], dim=1)
+    # 3. State entering each chunk: earlier chunks' states (and h_0), decayed across the chunks in between
+    if initial_state is None:
+        initial_state = torch.zeros_like(chunk_states[:, :1])
+    else:
+        initial_state = initial_state.to(chunk_states.dtype)[:, None]
+    chunk_states = torch.cat([initial_state, chunk_states], dim=1)
     chunk_decay = torch.exp(segment_sum(F.pad(a_cumsum[..., -1], (1, 0))))
-    entering_states = torch.einsum('bhzc,bchpn->bzhpn', chunk_decay, chunk_states)[:, :-1]
+    boundary_states = torch.einsum('bhzc,bchpn->bzhpn', chunk_decay, chunk_states)
+    entering_states = boundary_states[:, :-1]
 
     # 4. Contributions from the state entering the chunk
     y_carried = torch.einsum('bclhn,bchpn,bhcl->bclhp', c, entering_states, torch.exp(a_cumsum))
 
-    y = (y_within + y_carried).reshape(batch, num_chunks * chunk_size, heads, head_dim)
-    return y[:, :length]
+    y = (y_within + y_carried).reshape(batch, num_chunks * chunk_size, heads, head_dim)[:, :length]
+    if return_final_state:
+        # Padding after the end has zero input and zero log-decay, so it leaves the state unchanged
+        return y, boundary_states[:, -1]
+    return y
+
+
+def ssd_step(state: torch.Tensor, x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, c: torch.Tensor):
+    """
+    One step of the recurrence ssd_chunked computes, for generating a token at a time.
+
+    state is (batch, heads, head_dim, state_size); x, a, b, c are one position's
+    inputs with the length dimension removed. Returns y (batch, heads, head_dim) and the new state.
+    """
+    state = torch.exp(a)[..., None, None] * state + x[..., None] * b[..., None, :]
+    return torch.einsum('bhpn,bhn->bhp', state, c), state
 
 
 class GatedRMSNorm(nn.Module):
@@ -159,8 +198,8 @@ class Mamba2Mixer(nn.Module):
 
         # Output order: z, x, B, C, dt
         self.in_proj = nn.Linear(hidden_size, self.d_inner + self.conv_dim + self.nheads, bias=False)
-        self.conv1d = nn.Conv1d(self.conv_dim, self.conv_dim, kernel_size=d_conv, groups=self.conv_dim,
-                                padding=d_conv - 1, bias=True)
+        # Applied causally by causal_conv1d, which supplies the left context
+        self.conv1d = nn.Conv1d(self.conv_dim, self.conv_dim, kernel_size=d_conv, groups=self.conv_dim, bias=True)
 
         # dt_bias is the inverse softplus of a dt drawn log-uniformly from [dt_min, dt_max]
         dt = torch.exp(torch.rand(self.nheads) * (math.log(dt_max) - math.log(dt_min)) + math.log(dt_min))
@@ -172,18 +211,31 @@ class Mamba2Mixer(nn.Module):
         self.norm = GatedRMSNorm(self.d_inner, group_size=self.d_inner // ngroups, eps=norm_eps)
         self.out_proj = nn.Linear(self.d_inner, hidden_size, bias=False)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, attention_mask: Optional[torch.Tensor] = None,
+                cache: Optional[dict] = None) -> torch.Tensor:
+        """
+        attention_mask (batch, length), 1 for real tokens, zeroes padding so it
+        never enters the convolution or the state (left padding included).
+        cache, a dict, carries "conv_state" and "ssm_state" between calls for generation.
+        """
         batch, length, _ = hidden_states.shape
+        keep = None if attention_mask is None else attention_mask[:, -length:, None].to(hidden_states.dtype)
+        if keep is not None:
+            hidden_states = hidden_states * keep
         z, xbc, dt = torch.split(self.in_proj(hidden_states), [self.d_inner, self.conv_dim, self.nheads], dim=-1)
 
-        xbc = F.silu(self.conv1d(xbc.transpose(1, 2))[..., :length].transpose(1, 2))
+        conv_state = cache.get("conv_state") if cache is not None else None
+        xbc, conv_state = causal_conv1d(xbc.transpose(1, 2), self.conv1d, conv_state)
+        xbc = F.silu(xbc.transpose(1, 2))
+        if keep is not None:
+            xbc = xbc * keep
         x, b, c = torch.split(xbc, [self.d_inner, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
 
         x = x.reshape(batch, length, self.nheads, self.headdim)
         b = b.reshape(batch, length, self.ngroups, self.d_state)
         c = c.reshape(batch, length, self.ngroups, self.d_state)
 
-        if self.kernel_scan is not None and hidden_states.is_cuda:
+        if self.kernel_scan is not None and hidden_states.is_cuda and cache is None:
             # The fused kernel takes raw dt, grouped B/C and D, and computes the same y as below
             y = self.kernel_scan(x, dt, -torch.exp(self.A_log.float()), b, c, self.chunk_size,
                                  D=self.D, dt_bias=self.dt_bias, dt_softplus=True)
@@ -201,7 +253,17 @@ class Mamba2Mixer(nn.Module):
             x, b, c = x.to(scan_dtype), b.to(scan_dtype), c.to(scan_dtype)
             dt = F.softplus(dt.to(scan_dtype) + self.dt_bias.to(scan_dtype))
             A = -torch.exp(self.A_log.to(scan_dtype))
-            y = ssd_chunked(x * dt[..., None], A * dt, b, c, self.chunk_size)
+            if cache is None:
+                y = ssd_chunked(x * dt[..., None], A * dt, b, c, self.chunk_size)
+            else:
+                ssm_state = cache.get("ssm_state")
+                if ssm_state is not None and length == 1:
+                    y, ssm_state = ssd_step(ssm_state, (x * dt[..., None])[:, 0], (A * dt)[:, 0], b[:, 0], c[:, 0])
+                    y = y[:, None]
+                else:
+                    y, ssm_state = ssd_chunked(x * dt[..., None], A * dt, b, c, self.chunk_size,
+                                               initial_state=ssm_state, return_final_state=True)
+                cache["conv_state"], cache["ssm_state"] = conv_state, ssm_state
             y = y + x * self.D.to(scan_dtype)[:, None]
 
         y = y.reshape(batch, length, self.d_inner).to(z.dtype)

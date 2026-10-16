@@ -51,6 +51,12 @@ y = h + ffn(norm(h))       # skipped when the layer's FFN type is "none"
 
 This follows hybrid models such as Jamba and Granite, and means a comparison
 between layer types isn't confounded by norm placement or a missing FFN.
+
+**Generation** keeps each mixer's state between steps (`MixedLayerCache`), so
+each new token costs one step per layer rather than a pass over the whole
+sequence: keys and values for attention (only the window for sliding-window
+attention), and fixed-size states for conv (last k-1 inputs), Mamba-2 (conv and
+SSM state) and BASED (the running `sum phi(k) v^T`).
 Mixers are looked up in the `MIXERS` registry in `custom_architectures.py`.
 
 **The FFN is chosen per layer** with `ffn_types` (one entry per layer):

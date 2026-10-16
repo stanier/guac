@@ -59,8 +59,13 @@ class MyMixer(nn.Module):
         super().__init__()
         self.proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
 
-    def forward(self, hidden_states, attention_mask=None):
-        # Must be causal: position t may only read positions <= t
+    def forward(self, hidden_states, attention_mask=None, cache=None):
+        # Must be causal: position t may only read positions <= t.
+        # attention_mask (batch, total_len) marks padding, which must not reach
+        # real tokens (left padding is used in batched generation).
+        # cache is a LayerCache (a dict, plus .offset = tokens seen before this
+        # call) during generation and None otherwise. Store whatever state lets
+        # the next call continue the sequence, e.g. cache["state"] = ...
         return self.proj(my_sequence_mixing(hidden_states))
 ```
 
@@ -73,7 +78,8 @@ MIXERS = {..., "my_mixer": MyMixer}
 3. **Add config parameters** to `MixedLayerConfig` (and pass them through
 `build_model_config` in `pretrain.py` if presets should set them).
 
-4. **Run the tests.** The causality, padding, save/load and block-structure tests
+4. **Run the tests.** The causality, padding, save/load, block-structure and
+generation tests (token-by-token decoding must match a full forward pass)
 parametrize over `SUPPORTED_LAYER_TYPES`, so they cover the new type
 automatically. Don't paper over numerical problems by zeroing NaNs or clamping
 outputs: a diverging run should fail visibly.
@@ -83,7 +89,7 @@ outputs: a diverging run should fail visibly.
 1. **Computational Complexity**: Document O(·) complexity for sequence length L and hidden dimension d
 2. **Memory Usage**: Specify memory requirements and scaling behavior
 3. **Gradient Flow**: Ensure stable gradients through residual connections
-4. **Numerical Stability**: Add bounds checking and NaN handling
+4. **Numerical Stability**: Run scans, exponentials and long sums in float32 under mixed precision (see `mamba2.py`, `linear_attention.py`). Don't mask NaNs or clamp outputs
 5. **Documentation**: Include usage examples and parameter explanations
 
 ## 📊 Model Configuration

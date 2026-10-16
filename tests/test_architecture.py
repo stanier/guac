@@ -18,10 +18,6 @@ from scripts.training.core.custom_architectures import (
 )
 from scripts.training.core.pipeline_utils import load_base_model
 
-# Layer types that use softmax attention over a key padding mask
-SOFTMAX_ATTENTION_TYPES = ["full_attention", "flash_attention", "moh_attention"]
-
-
 def make_config(layer_types, **overrides):
     kwargs = dict(
         vocab_size=50, hidden_size=32, num_attention_heads=4, num_kv_heads=2,
@@ -121,11 +117,12 @@ def test_right_padding_leaves_real_tokens_unchanged(layer_type):
     torch.testing.assert_close(actual[:, :7], expected)
 
 
-@pytest.mark.parametrize("layer_type", SOFTMAX_ATTENTION_TYPES)
+@pytest.mark.parametrize("layer_type", SUPPORTED_LAYER_TYPES)
 def test_left_padding_is_masked_without_nan(layer_type):
     """
-    With left padding, the first positions have no real token to attend to.
-    Those rows must not produce NaN, and real tokens must ignore the padding.
+    With left padding (as in batched generation), real tokens must ignore the
+    padding. For attention, the first positions have no real token to attend
+    to, and those rows must not produce NaN.
     """
     torch.manual_seed(0)
     layer = MixedTransformerLayer(make_config([layer_type]), 0).eval()
