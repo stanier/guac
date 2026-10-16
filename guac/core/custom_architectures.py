@@ -6,6 +6,8 @@ shared block (MixedTransformerLayer), and MixedLayerForCausalLM.
 Mamba-2's scan lives in mamba2.py and BASED's in linear_attention.py.
 """
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -1175,9 +1177,17 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
                 module.bias.data.zero_()
             module.weight.data.fill_(1.0)
         elif isinstance(module, nn.Conv1d):
-            nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+            # Kaiming normal over fan_out, counting only each output channel's own group:
+            # nn.init's fan_out ignores groups, which makes grouped convolutions start too small
+            fan_out = module.out_channels // module.groups * module.kernel_size[0]
+            module.weight.data.normal_(mean=0.0, std=math.sqrt(2.0 / fan_out))
             if module.bias is not None:
                 module.bias.data.zero_()
+        elif isinstance(module, Mamba2Mixer):
+            # Mamba-2's depthwise convolution keeps PyTorch's default init, weights and
+            # bias, as in mamba_ssm. apply() reaches the mixer after its conv1d, so this
+            # undoes the Conv1d case above
+            module.conv1d.reset_parameters()
 
     def _set_gradient_checkpointing(self, module, value=False):
         """Enable or disable gradient checkpointing for the model."""

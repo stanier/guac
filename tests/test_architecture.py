@@ -1,10 +1,12 @@
 """
 Correctness tests for MixedLayerForCausalLM and its layer types.
 
-Covers weight tying across save/load, attention-mask handling, and config
+Covers weight tying across save/load, attention-mask handling, convolution
+initialization and config
 validation. Causality is covered separately in test_causality.py.
 """
 
+import math
 import sys
 from pathlib import Path
 
@@ -165,3 +167,28 @@ def test_based_layer_builds_without_num_kv_heads():
     config = make_config(["based"], num_kv_heads=None)
     assert config.based_num_key_value_heads == config.num_attention_heads
     MixedTransformerLayer(config, 0)
+
+
+def test_mamba2_conv_keeps_pytorch_default_init():
+    """
+    mamba_ssm leaves its depthwise conv at PyTorch's default init. The model's
+    Kaiming init over nn.init's fan_out (which ignores groups) made it 10-37x smaller.
+    """
+    torch.manual_seed(0)
+    model = MixedLayerForCausalLM(make_config(["mamba2"]))
+    conv = model.layers[0].mixer.conv1d
+    # kaiming_uniform_(a=sqrt(5)) draws from U(-1/sqrt(fan_in), 1/sqrt(fan_in)); fan_in is the kernel size here
+    bound = 1 / math.sqrt(conv.kernel_size[0])
+    assert conv.weight.abs().max() <= bound and conv.bias.abs().max() <= bound
+    assert conv.weight.std().item() == pytest.approx(bound / math.sqrt(3), rel=0.1)
+    assert conv.bias.std().item() == pytest.approx(bound / math.sqrt(3), rel=0.25)
+
+
+@pytest.mark.parametrize("groups", [1, 4, 64])
+def test_conv_mixer_init_counts_fan_out_per_group(groups):
+    torch.manual_seed(0)
+    model = MixedLayerForCausalLM(make_config(["conv"], hidden_size=64, conv_groups=groups, conv_kernel_size=3))
+    conv = model.layers[0].mixer.conv1d
+    fan_out = 64 // groups * 3
+    assert conv.weight.std().item() == pytest.approx(math.sqrt(2 / fan_out), rel=0.2)
+    assert (conv.bias == 0).all()
