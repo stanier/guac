@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Guac is a research framework for training and experimenting with **heterogeneous transformer architectures** — models where different layers use entirely different computational mechanisms (attention, sliding-window attention, Conv1D, Mamba-2, BASED, mixture-of-heads, MLP-only) stacked together in a single network. The research goal is understanding how mixed layer types interact and what inductive biases they contribute.
 
-**Current work plan:** `docs/ROADMAP.md` has the status, decisions made, the next steps (with file and line pointers), known unfixed issues, and an offline end-to-end smoke test. Read it before starting work, and update it as items land.
+**Current work plan:** `docs/ROADMAP.md` has the status, what landed (with commits), behavior changes, decisions made, open items, and an offline end-to-end smoke test. Read it before starting work, and update it as items land.
 
 ## Commands
 

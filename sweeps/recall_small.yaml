@@ -23,7 +23,9 @@ architectures:
   conv: [conv, conv]
   mamba2: [mamba2, mamba2]
   based: [based, based]
-  based_hybrid: [based, sliding_window_attention]
+  # BASED has no position information of its own; the paper pairs it with short
+  # convolutions, which let the next layer bind each key to the value after it
+  conv_based: [conv, based]
   mamba2_attention: [mamba2, full_attention]
 
 tasks:

@@ -59,6 +59,12 @@ include full attention's quadratic term at the given sequence length.
 Synthetic tasks isolate one ability each. Expect attention (full or windowed,
 within its window) to solve recall and induction fastest, Mamba-2 and BASED to
 degrade as MQAR's key-value pairs outgrow their fixed state, and conv layers
-alone to fail anything beyond their kernel. A hybrid that keeps a little
-attention should recover most of attention's recall. Check that each task is
-learnable at your settings (attention near 100%) before comparing others on it.
+alone to fail anything beyond their kernel. Check that each task is learnable
+at your settings (attention near 100%) before comparing others on it.
+
+Mind what each mixer can see. BASED layers have no position information (as
+in the paper), and causal linear attention without it is order-invariant over
+its prefix: a stack of BASED layers, or BASED with a single attention layer,
+can't bind a key to the value after it. The BASED paper pairs it with short
+convolutions for that, hence `conv_based` in the example. Mamba-2 has its own
+short convolution inside the mixer.
