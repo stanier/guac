@@ -8,6 +8,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
+import pytest
 import torch
 
 from guac.core.custom_architectures import GroupedQueryAttention, MixedLayerConfig, MixtureOfHeadAttention
@@ -40,17 +41,38 @@ def test_all_heads_with_equal_gates_is_multi_head_attention():
 
 
 def test_unselected_heads_contribute_nothing():
-    """Routing every token to head 2 alone equals attention with the other heads' output columns removed."""
-    moh, gqa = make_pair(top_k=1, router_bias=[0.0, 0.0, 10.0, 0.0])
+    """
+    Routing every token to head 2 alone equals attention with the other heads'
+    output columns removed, scaled by head 2's router probability (the top-1 gate).
+    """
+    router_bias = [0.0, 0.0, 2.0, 0.0]
+    moh, gqa = make_pair(top_k=1, router_bias=router_bias)
     head_dim = 32 // HEADS
     with torch.no_grad():
         keep = torch.zeros(32)
         keep[2 * head_dim:3 * head_dim] = 1
         gqa.o_proj.weight.mul_(keep)
 
+    gate = torch.softmax(torch.tensor(router_bias), dim=0)[2]
     x = torch.randn(2, 9, 32)
     with torch.no_grad():
-        torch.testing.assert_close(moh(x), gqa(x))
+        torch.testing.assert_close(moh(x), gqa(x) * gate)
+
+
+@pytest.mark.parametrize("heads", [2, 3])
+def test_top_1_router_learns_from_the_output(heads):
+    """
+    moh_top_k defaults to heads // 2, which is 1 for 2 or 3 heads. A softmax over
+    the one selected score is always 1, so the router got no gradient at all.
+    """
+    torch.manual_seed(0)
+    config = MixedLayerConfig(hidden_size=24, num_attention_heads=heads, num_kv_heads=heads, num_hidden_layers=1,
+                              layer_types=["moh_attention"], intermediate_size=64, moh_noise_std=0.0)
+    assert config.moh_top_k == 1
+    moh = MixtureOfHeadAttention(config).train()
+    moh(torch.randn(2, 9, 24)).pow(2).sum().backward()
+    for name, param in moh.head_router.named_parameters():
+        assert param.grad is not None and param.grad.abs().sum() > 0, name
 
 
 def test_output_has_more_than_one_heads_capacity():

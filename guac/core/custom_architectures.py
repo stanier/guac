@@ -693,7 +693,12 @@ class MixtureOfHeadAttention(nn.Module):
         # sparse [batch_size, seq_len, num_attention_heads] tensor
         head_scores = head_scores / self.moh_temperature
         top_k_scores, top_k_indices = torch.topk(head_scores, self.moh_top_k, dim=-1)
-        top_k_weights = F.softmax(top_k_scores, dim=-1)  # [batch_size, seq_len, top_k]
+        if self.moh_top_k == 1:
+            # A softmax over one score is always 1, which gives the router no gradient;
+            # gate the head by its probability among all heads instead (as Switch Transformer does)
+            top_k_weights = F.softmax(head_scores, dim=-1).gather(-1, top_k_indices)
+        else:
+            top_k_weights = F.softmax(top_k_scores, dim=-1)  # [batch_size, seq_len, top_k]
         head_weights = torch.zeros_like(head_scores).scatter(-1, top_k_indices, top_k_weights)
 
         # Project to Q, K, V
@@ -808,7 +813,10 @@ class SharedExpertMoE(nn.Module):
 
         tokens is (num_tokens, hidden). Returns the probabilities over all experts
         (num_tokens, num_experts), and the top-k expert indices with their weights
-        renormalized to sum to 1 (both (num_tokens, top_k)).
+        (both (num_tokens, top_k)). With top_k > 1 the weights are renormalized to
+        sum to 1. With top_k = 1 the weight is the expert's router probability,
+        as in Switch Transformer: renormalized, it would always be 1, and the
+        router would learn only from the load-balancing loss.
         """
         router_logits = self.router(tokens)
 
@@ -818,7 +826,8 @@ class SharedExpertMoE(nn.Module):
 
         router_probs = torch.softmax(router_logits / self.moe_temperature, dim=-1)
         top_k_weights, top_k_indices = torch.topk(router_probs, self.moe_top_k, dim=-1)
-        top_k_weights = top_k_weights / top_k_weights.sum(dim=-1, keepdim=True)
+        if self.moe_top_k > 1:
+            top_k_weights = top_k_weights / top_k_weights.sum(dim=-1, keepdim=True)
         return router_probs, top_k_weights, top_k_indices
 
     def load_balancing_loss(self, router_probs, top_k_indices, token_weights=None):

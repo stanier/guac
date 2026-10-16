@@ -80,6 +80,33 @@ def test_load_balancing_loss_trains_the_router():
     assert grad.abs().sum() > 0
 
 
+def test_top_1_router_learns_from_the_language_model_loss():
+    """
+    Renormalized over one expert, the gate is always 1, so the router learned
+    only from the load-balancing loss. With top-1 the gate is the router
+    probability (as in Switch Transformer), so the LM loss reaches the router.
+    """
+    torch.manual_seed(0)
+    model = MixedLayerForCausalLM(make_config(moe_top_k=1)).eval()  # eval: the loss leaves out the aux loss
+    input_ids = torch.randint(0, 50, (2, 8))
+    out = model(input_ids=input_ids, labels=input_ids)
+    (grad,) = torch.autograd.grad(out.loss, model.layers[1].ffn.router.weight)
+    assert grad.abs().sum() > 0
+
+
+def test_top_1_weight_is_the_router_probability_and_top_k_weights_sum_to_1():
+    torch.manual_seed(0)
+    tokens = torch.randn(7, 32)
+    moe = SharedExpertMoE(make_config(moe_top_k=1)).eval()
+    probs, weights, indices = moe.route(tokens)
+    torch.testing.assert_close(weights, probs.gather(1, indices))
+    assert (weights < 1).all()
+
+    moe = SharedExpertMoE(make_config(moe_top_k=2)).eval()
+    _, weights, _ = moe.route(tokens)
+    torch.testing.assert_close(weights.sum(-1), torch.ones(7))
+
+
 def test_load_balancing_loss_ignores_padding():
     torch.manual_seed(0)
     moe = SharedExpertMoE(make_config()).eval()
