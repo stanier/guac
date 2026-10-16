@@ -11,7 +11,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 import pytest
 
-from scripts.training.core.arithmetic import (
+from guac.core.arithmetic import (
     CATEGORIES, HOLDOUT_FRACTION, canonical_expression, generate_problems, is_held_out,
 )
 

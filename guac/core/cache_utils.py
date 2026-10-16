@@ -23,11 +23,8 @@ def get_cache_directory(cache_type: str, cache_key: str) -> str:
     Returns:
         Path to cache directory
     """
-    try:
-        from .path_manager import get_tokenized_dataset_path
-        return str(get_tokenized_dataset_path(cache_type, cache_key))
-    except ImportError:
-        return f"./tokenized_cache_{cache_key}"
+    from .path_manager import get_tokenized_dataset_path
+    return str(get_tokenized_dataset_path(cache_type, cache_key))
 
 
 def is_saved_dataset(path: str) -> bool:

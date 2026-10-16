@@ -298,7 +298,7 @@ architectures:
   mixed_layer:
     config_class: "MixedLayerConfig"
     model_class: "MixedLayerForCausalLM"
-    import_path: "scripts.training.custom_architectures"
+    import_path: "guac.custom_architectures"
 
 # Architecture-specific defaults
 architecture_defaults:

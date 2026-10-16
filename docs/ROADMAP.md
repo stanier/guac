@@ -31,7 +31,7 @@ python -m pytest                                                     # 127 tests
   `site_config.example.yml` with a warning, which is fine for tests and smoke runs.
 - `scratch/` (tokenizers, datasets, checkpoints) is git-ignored. A fresh clone has none of it.
 - The character tokenizer used by `guac-106m-arith` builds offline:
-  `python -m scripts.training.tokenizer.build_char_tokenizer`.
+  `python -m guac.tokenizer.build_char_tokenizer`.
   Every other preset needs the 60k SentencePiece tokenizer (`make train-tokenizer`),
   which downloads data.
 
@@ -41,7 +41,7 @@ Unit tests don't exercise `Trainer`, the collators or the stage scripts. After
 changing model or pipeline code, also run a real pretrain → midtrain:
 
 ```bash
-python -m scripts.training.tokenizer.build_char_tokenizer
+python -m guac.tokenizer.build_char_tokenizer
 python - <<'EOF'
 import random
 from datasets import Dataset
@@ -50,10 +50,10 @@ words = "the model learns which layer types mix information across tokens".split
 texts = [" ".join(rng.choice(words) for _ in range(rng.randint(8, 120))) for _ in range(400)]
 Dataset.from_dict({"text": texts}).save_to_disk("scratch/smoke/tiny_text")
 EOF
-python scripts/training/pipeline/pretrain.py --model-config guac-13m-arith \
+python guac/pipeline/pretrain.py --model-config guac-13m-arith \
     --datasets scratch/smoke/tiny_text --output-dir scratch/smoke/pre --max-steps 12 --batch-size 4 --grad-accum 2 \
     --eval-steps 6 --validation-docs 40
-python scripts/training/pipeline/midtrain.py --base-model scratch/smoke/pre --task arithmetic \
+python guac/pipeline/midtrain.py --base-model scratch/smoke/pre --task arithmetic \
     --output-dir scratch/smoke/mid --num-arithmetic-samples 400 --num-eval-samples 40 \
     --accuracy-eval-per-category 2 --max-steps 4 --eval-steps 2 --batch-size 8 --grad-accum 1
 ```
@@ -93,7 +93,7 @@ relevant) and call `build_model_config` and `create_training_arguments` from
 
 ### Phase 1: Mamba-2 (`446bd60`)
 
-- `scripts/training/core/mamba2.py`: Mamba-2 per Dao & Gu (2024), with a chunked
+- `guac/core/mamba2.py`: Mamba-2 per Dao & Gu (2024), with a chunked
   SSD scan in plain PyTorch. It is exact against the sequential recurrence (values
   and gradients) and matches transformers' `Mamba2Mixer` given the same weights.
   It is about 10× faster than the old layer at 512 tokens, with linear memory.
@@ -152,7 +152,7 @@ relevant) and call `build_model_config` and `create_training_arguments` from
 
 ## Next: Rest of Phase 1 (Mechanism Fidelity)
 
-Line numbers refer to `scripts/training/core/custom_architectures.py` at `4fd35cb`.
+Line numbers refer to `guac/core/custom_architectures.py` at `4fd35cb`.
 
 ### 1.2 BASED rewrite (`BasedMixer`, line 609; `_based_attention`, line 670)
 
@@ -233,7 +233,7 @@ This is what makes the layer comparisons meaningful.
   - `trl`, `peft` and `wandb` are only used by legacy code.
   - Set `requires-python` to 3.9+.
 - **Broken references:**
-  - `core/train_tokenizer.py:57` imports `scripts.training.legacy.*`, which
+  - `core/train_tokenizer.py:57` imports `guac.legacy.*`, which
     doesn't exist; legacy code is in `scripts/legacy/`.
   - The Makefile calls `hf_partial_download.py` at the repo root (lines 469 and
     522); it's in `scripts/`.

@@ -13,10 +13,10 @@ sys.path.append(str(Path(__file__).parent.parent))
 import pytest
 import torch
 
-from scripts.training.core.custom_architectures import (
+from guac.core.custom_architectures import (
     SUPPORTED_LAYER_TYPES, MixedLayerConfig, MixedLayerForCausalLM, MixedTransformerLayer,
 )
-from scripts.training.core.pipeline_utils import load_base_model
+from guac.core.pipeline_utils import load_base_model
 
 def make_config(layer_types, **overrides):
     kwargs = dict(

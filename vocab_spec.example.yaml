@@ -11,9 +11,9 @@
 #                         tokens. Learns the remaining budget from final_training.data.
 #
 # Run:
-#   python -m scripts.training.tokenizer.pipeline --spec vocab_spec.yaml
-#   python -m scripts.training.tokenizer.pipeline --spec vocab_spec.yaml --status
-#   python -m scripts.training.tokenizer.pipeline --spec vocab_spec.yaml --force
+#   python -m guac.tokenizer.pipeline --spec vocab_spec.yaml
+#   python -m guac.tokenizer.pipeline --spec vocab_spec.yaml --status
+#   python -m guac.tokenizer.pipeline --spec vocab_spec.yaml --force
 
 vocab_spec:
 

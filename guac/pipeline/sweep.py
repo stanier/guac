@@ -29,8 +29,8 @@ A sweep spec is a YAML file (see sweeps/README.md and the examples there):
     train: {batch_size: 64, learning_rate: 1e-3}
 
 Usage:
-    python scripts/training/pipeline/sweep.py sweeps/recall_small.yaml
-    python scripts/training/pipeline/sweep.py sweeps/recall_small.yaml --dry-run    # sizes only, no training
+    python guac/pipeline/sweep.py sweeps/recall_small.yaml
+    python guac/pipeline/sweep.py sweeps/recall_small.yaml --dry-run    # sizes only, no training
 
 Results go to scratch/sweeps/<name>/ (or --output-dir): results.jsonl gets one
 line per finished run, so an interrupted sweep resumes where it stopped (pass
@@ -46,16 +46,16 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 import torch
 import yaml
 
-from scripts.training.core.custom_architectures import MixedLayerForCausalLM, model_flops_per_token
-from scripts.training.core.diagnostics import DEFAULT_VOCAB, TASKS, run_diagnostic, run_language_modeling
-from scripts.training.core.pipeline_utils import numbers_in, write_run_info
-from scripts.training.pipeline.pretrain import build_model_config
+from guac.core.custom_architectures import MixedLayerForCausalLM, model_flops_per_token
+from guac.core.diagnostics import DEFAULT_VOCAB, TASKS, run_diagnostic, run_language_modeling
+from guac.core.pipeline_utils import numbers_in, write_run_info
+from guac.pipeline.pretrain import build_model_config
 
 TRAIN_KEYS = ('batch_size', 'learning_rate', 'weight_decay', 'warmup_steps', 'eval_every')
 
@@ -112,7 +112,7 @@ def architecture_settings(spec: Dict[str, Any], name: str) -> Dict[str, Any]:
 def load_lm_data(task: Dict[str, Any]) -> Tuple[Any, torch.Tensor, torch.Tensor]:
     """(tokenizer, train blocks, validation blocks) for an 'lm' task, packed to its seq_len."""
     from transformers import AutoTokenizer
-    from scripts.training.pipeline.pretrain import prepare_pretraining_data
+    from guac.pipeline.pretrain import prepare_pretraining_data
 
     tokenizer = AutoTokenizer.from_pretrained(task['tokenizer'])
     train, validation = prepare_pretraining_data(task['datasets'], tokenizer, task_seq_len(task), pack=True,

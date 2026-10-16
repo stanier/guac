@@ -12,8 +12,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from scripts.training.core.custom_architectures import MixedLayerConfig
-from scripts.training.core.mamba2 import Mamba2Mixer, ssd_chunked
+from guac.core.custom_architectures import MixedLayerConfig
+from guac.core.mamba2 import Mamba2Mixer, ssd_chunked
 
 
 def sequential_scan(x, a, b, c):

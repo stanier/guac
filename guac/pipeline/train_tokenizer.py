@@ -15,38 +15,20 @@ from pathlib import Path
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 from transformers import AutoTokenizer
 from datasets import load_dataset, load_from_disk, concatenate_datasets
 
-try:
-    from scripts.training.core.dataset_utils import load_pretraining_datasets
-except ImportError:
-    try:
-        from ..core.dataset_utils import load_pretraining_datasets
-    except ImportError:
-        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        sys.path.insert(0, parent_dir)
-        from core.dataset_utils import load_pretraining_datasets
+from guac.core.dataset_utils import load_pretraining_datasets
 
 
 def get_special_tokens() -> tuple[Dict[str, str], List[str]]:
-    """Get special tokens for tokenizer."""
-    try:
-        from scripts.training.core.prompt_templates import create_prompt_tokenizer
-        prompt_tokenizer = create_prompt_tokenizer()
-        core_tokens = prompt_tokenizer.get_core_tokens()
-        all_special_tokens = prompt_tokenizer.get_all_special_tokens()
-    except ImportError:
-        core_tokens = {
-            'pad_token': '<pad>', 'unk_token': '<unk>',
-            'bos_token': '<s>', 'eos_token': '</s>'
-        }
-        all_special_tokens = list(core_tokens.values())
-
-    return core_tokens, all_special_tokens
+    """The core special tokens (pad, unk, bos, eos) and every special token, from prompt_templates."""
+    from guac.core.prompt_templates import create_prompt_tokenizer
+    prompt_tokenizer = create_prompt_tokenizer()
+    return prompt_tokenizer.get_core_tokens(), prompt_tokenizer.get_all_special_tokens()
 
 
 def load_datasets_for_tokenizer(dataset_names: List[str]) -> Any:
@@ -59,12 +41,8 @@ def get_output_path(output_dir: Optional[str], vocab_size: int, tokenizer_type: 
     if output_dir:
         return output_dir
 
-    try:
-        from scripts.training.core.path_manager import get_tokenizer_output_path
-        path = get_tokenizer_output_path(tokenizer_type, f"shared_{vocab_size//1000}k")
-        return str(path)
-    except ImportError:
-        return f"scratch/tokenizers/{tokenizer_type}/shared_{vocab_size//1000}k"
+    from guac.core.path_manager import get_tokenizer_output_path
+    return str(get_tokenizer_output_path(tokenizer_type, f"shared_{vocab_size//1000}k"))
 
 
 def create_training_text_file(datasets: Any, all_special_tokens: List[str],

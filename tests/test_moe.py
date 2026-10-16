@@ -11,7 +11,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 import pytest
 import torch
 
-from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, SharedExpertMoE
+from guac.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, SharedExpertMoE
 
 
 def make_config(**overrides):

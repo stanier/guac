@@ -72,7 +72,7 @@ source $TRAINING_VENV/bin/activate
 
 train_tokenizer() {
     srun -J "tokenizer_training" --jobid $SLURM_JOB_ID bash -c """
-$LAUNCHER scripts/training/pipeline/train_tokenizer.py \
+$LAUNCHER guac/pipeline/train_tokenizer.py \
     --vocab-size $VOCAB_SIZE \
     --tokenizer-type $TOKENIZER_TYPE \
     --datasets $TOKENIZER_DATASETS \
@@ -91,7 +91,7 @@ load_datasets() {
 tokenize_dataset() {
     srun -J "dataset_tokenization" --jobid $SLURM_JOB_ID bash -c """
 rsync -r $SCRATCH_TODO $LSCRATCH_TODO
-$LAUNCHER scripts/training/pipeline/tokenize_datasets.py \
+$LAUNCHER guac/pipeline/tokenize_datasets.py \
     --tokenizer $LSCRATCH_DIR/$TOKENIZER_PATH \
     --datasets $PRETRAIN_DATASETS \
     --max-length $MAX_LENGTH \
@@ -108,7 +108,7 @@ pretrain() {
 
     srun -J "pretraining" --jobid $SLURM_JOB_ID bash -c """
 rsync -r $SCRATCH_DIR/$TOKENIZER_NAME $LSCRATCH_DIR/$TOKENIZER_NAME
-$LAUNCHER scripts/training/pipeline/pretrain.py \
+$LAUNCHER guac/pipeline/pretrain.py \
     --config $PRETRAIN_CONFIG \
     --max-steps $PRETRAIN_STEPS \
     $PRETRAIN_ARGS
@@ -129,7 +129,7 @@ midtrain() {
 
     srun -J "midtraining" --jobid $SLURM_JOB_ID bash -c """
 rsync -r $SCRATCH_DIR/$CHECKPOINT_NAME $LSCRATCH_DIR/$CHECKPOINT_NAME
-$LAUNCHER scripts/training/pipeline/midtrain.py $MIDTRAIN_ARGS
+$LAUNCHER guac/pipeline/midtrain.py $MIDTRAIN_ARGS
 rsync -r $LSCRATCH_DIR/$CHECKPOINT_NAME $SCRATCH_DIR/$CHECKPOINT_NAME
 """
 }
@@ -148,7 +148,7 @@ posttrain() {
 
     srun -J "posttraining" --jobid $SLURM_JOB_ID bash -c """
 rsync -r $SCRATCH_DIR/$CHECKPOINT_NAME $LSCRATCH_DIR/$CHECKPOINT_NAME
-$LAUNCHER scripts/training/pipeline/posttrain.py $POSTTRAIN_ARGS
+$LAUNCHER guac/pipeline/posttrain.py $POSTTRAIN_ARGS
 rsync -r $LSCRATCH_DIR/$CHECKPOINT_NAME $SCRATCH_DIR/$CHECKPOINT_NAME
 """
 }

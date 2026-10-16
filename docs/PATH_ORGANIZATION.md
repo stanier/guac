@@ -82,7 +82,7 @@ With the default configuration, the complete directory structure looks like:
 The `PathManager` class provides programmatic access to all paths:
 
 ```python
-from scripts.training.core.path_manager import get_path_manager
+from guac.core.path_manager import get_path_manager
 
 pm = get_path_manager()
 
@@ -101,7 +101,7 @@ cache_path = pm.get_tokenized_dataset_path("pretraining", "wikitext_vocab32k")
 For common operations, convenience functions are available:
 
 ```python
-from scripts.training.core.path_manager import (
+from guac.core.path_manager import (
     get_scratch_dir,
     get_dataset_path,
     get_tokenizer_output_path,
@@ -119,11 +119,11 @@ hf_cache = get_huggingface_cache_dir()
 The following scripts have been updated to use the centralized path management:
 
 ### Core Training Scripts
-- `scripts/training/core/train_tokenizer.py` - Uses path manager for tokenizer outputs and temp directories
-- `scripts/training/core/pipeline_utils.py` - Updated cache directory creation
-- `scripts/training/pipeline/pretrain.py` - Uses path manager for model outputs and cache
-- `scripts/training/pipeline/midtrain.py` - Uses path manager for model outputs and cache
-- `scripts/training/pipeline/posttrain.py` - Uses path manager for model outputs and cache
+- `guac/core/train_tokenizer.py` - Uses path manager for tokenizer outputs and temp directories
+- `guac/core/pipeline_utils.py` - Updated cache directory creation
+- `guac/pipeline/pretrain.py` - Uses path manager for model outputs and cache
+- `guac/pipeline/midtrain.py` - Uses path manager for model outputs and cache
+- `guac/pipeline/posttrain.py` - Uses path manager for model outputs and cache
 
 ### Configuration Files
 - `site_config.yml` - Updated with new directory structure

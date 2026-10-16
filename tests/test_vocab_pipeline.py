@@ -22,9 +22,9 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from scripts.training.tokenizer.vocab_spec import VocabSpec, PartitionSpec
-from scripts.training.tokenizer.pipeline import VocabPipeline
-from scripts.training.tokenizer.utils import deduplicate_partitions
+from guac.tokenizer.vocab_spec import VocabSpec, PartitionSpec
+from guac.tokenizer.pipeline import VocabPipeline
+from guac.tokenizer.utils import deduplicate_partitions
 
 
 # ---------------------------------------------------------------------------

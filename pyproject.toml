@@ -5,7 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "guac"
 version = "0.1.0"
-requires-python = ">=3.8"
+description = "Research framework for heterogeneous (mixed-layer) transformer architectures"
+requires-python = ">=3.9"
 dependencies = [
     "torch",
     "transformers==4.46.3",
@@ -14,21 +15,21 @@ dependencies = [
     "sentencepiece",
     "pyyaml",
     "jinja2",
-    "numpy",
-    "pandas",
-    "numba",
     "tqdm",
     "psutil",
-    "wandb",
-    "peft",
-    "trl>=0.12,<0.13",
 ]
 
 [project.optional-dependencies]
 test = ["pytest"]
+# report_to: wandb
+tracking = ["wandb"]
+# Mamba-2's fused scan kernel (mamba_scan_impl: mamba_ssm); needs CUDA and a compiler
+kernels = ["mamba-ssm"]
+# Standalone data scripts in scripts/datasets/
+tools = ["numpy", "pandas", "numba"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
-where = ["."]
+include = ["guac*"]

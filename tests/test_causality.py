@@ -15,7 +15,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 import pytest
 import torch
-from scripts.training.core.custom_architectures import SUPPORTED_LAYER_TYPES, MixedLayerConfig, MixedTransformerLayer
+from guac.core.custom_architectures import SUPPORTED_LAYER_TYPES, MixedLayerConfig, MixedTransformerLayer
 
 SEQ_LEN = 32
 PERTURB_POS = 15

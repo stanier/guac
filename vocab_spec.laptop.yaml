@@ -7,8 +7,8 @@
 #   - Only wikitext-103 as training data (available, manageable size)
 #
 # Run manually:
-#   python -m scripts.training.tokenizer.pipeline --spec vocab_spec.laptop.yaml
-#   python -m scripts.training.tokenizer.pipeline --spec vocab_spec.laptop.yaml --status
+#   python -m guac.tokenizer.pipeline --spec vocab_spec.laptop.yaml
+#   python -m guac.tokenizer.pipeline --spec vocab_spec.laptop.yaml --status
 #
 # Or just run `make pretrain CONFIG=smoke` — train_tokenizer.py will call
 # VocabPipeline automatically when it sees vocab_spec_path in the config.

@@ -1,7 +1,7 @@
 # A small, CPU-friendly sweep: recall and induction across mixer types at a
 # matched parameter budget. Each run takes about a minute on a laptop CPU.
-#   python scripts/training/pipeline/sweep.py sweeps/recall_small.yaml --dry-run
-#   python scripts/training/pipeline/sweep.py sweeps/recall_small.yaml
+#   python guac/pipeline/sweep.py sweeps/recall_small.yaml --dry-run
+#   python guac/pipeline/sweep.py sweeps/recall_small.yaml
 name: recall-small
 
 base:

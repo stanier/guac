@@ -21,11 +21,8 @@ from .utils import (
 
 
 def _load_datasets(dataset_names: List[str]):
-    """Import and call load_pretraining_datasets, handling both package and direct-execution contexts."""
-    try:
-        from scripts.training.core.dataset_utils import load_pretraining_datasets
-    except ImportError:
-        from ..core.dataset_utils import load_pretraining_datasets
+    """load_pretraining_datasets, imported when needed (it pulls in the datasets library)."""
+    from ..core.dataset_utils import load_pretraining_datasets
     return load_pretraining_datasets(dataset_names)
 
 

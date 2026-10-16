@@ -13,7 +13,7 @@ import pytest
 from tokenizers import Tokenizer, models, pre_tokenizers
 from transformers import PreTrainedTokenizerFast
 
-from scripts.training.pipeline.posttrain import (
+from guac.pipeline.posttrain import (
     load_records, prepare_posttraining_dataset, synthetic_instruction_records, to_segments, tokenize_segments,
 )
 

@@ -17,12 +17,12 @@ from pathlib import Path
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 from transformers import AutoTokenizer
 
-from scripts.training.pipeline.pretrain import prepare_pretraining_data
+from guac.pipeline.pretrain import prepare_pretraining_data
 
 
 def main():

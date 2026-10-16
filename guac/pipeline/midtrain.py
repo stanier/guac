@@ -21,7 +21,7 @@ from pathlib import Path
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 from transformers import (
@@ -30,45 +30,17 @@ from transformers import (
 )
 from datasets import load_dataset, load_from_disk, concatenate_datasets
 
-try:
-    from scripts.training.core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
-    from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
-    from scripts.training.core.arithmetic import (
-        CATEGORIES, SPLIT_VERSION, generate_problems, format_answer, save_format, evaluate_accuracy
-    )
-    from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
-    from scripts.training.core.pipeline_utils import (
-        load_base_model, create_standard_data_collator, get_output_directory,
-        run_training_loop, apply_debug_mode, save_trained_model,
-        GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
-    )
-except ImportError:
-    try:
-        from ..core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
-        from ..core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
-        from ..core.arithmetic import (
-            CATEGORIES, SPLIT_VERSION, generate_problems, format_answer, save_format, evaluate_accuracy
-        )
-        from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
-        from ..core.pipeline_utils import (
-            load_base_model, create_standard_data_collator, get_output_directory,
-            run_training_loop, apply_debug_mode, save_trained_model,
-            GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
-        )
-    except ImportError:
-        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        sys.path.insert(0, parent_dir)
-        from core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
-        from core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
-        from core.arithmetic import (
-            CATEGORIES, SPLIT_VERSION, generate_problems, format_answer, save_format, evaluate_accuracy
-        )
-        from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
-        from core.pipeline_utils import (
-            load_base_model, create_standard_data_collator, get_output_directory,
-            run_training_loop, apply_debug_mode, save_trained_model,
-            GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
-        )
+from guac.core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
+from guac.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
+from guac.core.arithmetic import (
+    CATEGORIES, SPLIT_VERSION, generate_problems, format_answer, save_format, evaluate_accuracy
+)
+from guac.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
+from guac.core.pipeline_utils import (
+    load_base_model, create_standard_data_collator, get_output_directory,
+    run_training_loop, apply_debug_mode, save_trained_model,
+    GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
+)
 
 
 def create_arithmetic_dataset(tokenizer: Any, num_samples: int = 50000, force_retokenize: bool = False,

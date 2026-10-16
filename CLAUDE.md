@@ -49,7 +49,7 @@ make clean       # Clean all outputs
 
 ### Mixed Layer Composition
 
-The core novelty is `MixedLayerConfig` in `scripts/training/core/custom_architectures.py`, which allows heterogeneous layer stacks. Supported layer types:
+The core novelty is `MixedLayerConfig` in `guac/core/custom_architectures.py`, which allows heterogeneous layer stacks. Supported layer types:
 
 - **MLP-only**: Point-wise feed-forward, O(d²), no sequence mixing
 - **Conv1D**: Local pattern recognition with configurable kernel size
@@ -63,17 +63,17 @@ The core novelty is `MixedLayerConfig` in `scripts/training/core/custom_architec
 
 | Stage | Script | Purpose | Default Datasets |
 |-------|--------|---------|-----------------|
-| Pre-training | `scripts/training/pipeline/pretrain.py` | Foundation LM | FineWeb, FineWeb-EDU, WikiText-103 |
-| Mid-training | `scripts/training/pipeline/midtrain.py` | Task specialization | Task-specific (arithmetic, code, reasoning) |
-| Post-training | `scripts/training/pipeline/posttrain.py` | Instruction tuning | OpenOrca, Alpaca, UltraChat |
+| Pre-training | `guac/pipeline/pretrain.py` | Foundation LM | FineWeb, FineWeb-EDU, WikiText-103 |
+| Mid-training | `guac/pipeline/midtrain.py` | Task specialization | Task-specific (arithmetic, code, reasoning) |
+| Post-training | `guac/pipeline/posttrain.py` | Instruction tuning | OpenOrca, Alpaca, UltraChat |
 
 ### Key Source Files
 
-- `scripts/training/core/custom_architectures.py` — All layer type implementations and the model; Mamba-2's mixer and chunked SSD scan live in `scripts/training/core/mamba2.py`
-- `scripts/training/core/callbacks.py` — Training monitoring, profiling, live inference
-- `scripts/training/core/dataset_utils.py` — Dataset loading, tokenization, caching
-- `scripts/training/core/path_manager.py` — Centralized path resolution from `site_config.yml`
-- `scripts/training/core/prompt_templates.py` — Jinja2-based prompt system with custom tokens
+- `guac/core/custom_architectures.py` — All layer type implementations and the model; Mamba-2's mixer and chunked SSD scan live in `guac/core/mamba2.py`
+- `guac/core/callbacks.py` — Training monitoring, profiling, live inference
+- `guac/core/dataset_utils.py` — Dataset loading, tokenization, caching
+- `guac/core/path_manager.py` — Centralized path resolution from `site_config.yml`
+- `guac/core/prompt_templates.py` — Jinja2-based prompt system with custom tokens
 
 ### Configuration
 

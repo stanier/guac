@@ -26,16 +26,16 @@ from pathlib import Path
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 import torch
 from transformers import TrainingArguments, DataCollatorForSeq2Seq, EarlyStoppingCallback
 from datasets import load_dataset, load_from_disk, concatenate_datasets, Dataset
 
-from scripts.training.core.arithmetic import CATEGORIES, generate_problems
-from scripts.training.core.callbacks import CustomProgressCallback, ProfilingCallback
-from scripts.training.core.pipeline_utils import (
+from guac.core.arithmetic import CATEGORIES, generate_problems
+from guac.core.callbacks import CustomProgressCallback, ProfilingCallback
+from guac.core.pipeline_utils import (
     load_base_model, get_output_directory, run_training_loop, apply_debug_mode, save_trained_model,
     GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info,
 )

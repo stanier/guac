@@ -12,7 +12,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 import pytest
 import torch
 
-from scripts.training.core.custom_architectures import SUPPORTED_LAYER_TYPES, MixedLayerConfig, MixedLayerForCausalLM
+from guac.core.custom_architectures import SUPPORTED_LAYER_TYPES, MixedLayerConfig, MixedLayerForCausalLM
 
 WINDOW = 4
 

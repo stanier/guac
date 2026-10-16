@@ -275,7 +275,7 @@ well as data order. Checkpoints are written every `save_steps` (default 1000).
 
 ## 🧪 Synthetic Diagnostics and Sweeps
 
-`scripts/training/core/diagnostics.py` has four synthetic tasks, each
+`guac/core/diagnostics.py` has four synthetic tasks, each
 isolating one ability. They generate token ids directly, with no tokenizer,
 and put labels only on the answer:
 
@@ -290,12 +290,12 @@ Arithmetic, through `midtrain.py` and `make eval-arithmetic`, completes the set.
 
 ```bash
 # One model, one task: trains on fresh batches, reports held-out example and token accuracy
-python scripts/training/pipeline/run_diagnostics.py --task mqar --layer-types conv,based,sliding_window_attention,based \
+python guac/pipeline/run_diagnostics.py --task mqar --layer-types conv,based,sliding_window_attention,based \
     --hidden-size 128 --steps 3000 --task-arg num_kv_pairs=16 --task-arg seq_len=128 --param-match full_attention
 make diagnostics DIAG_TASK=induction LAYERS=mamba2,mamba2
 
 # A grid of architectures x tasks at a matched parameter or FLOP budget, one results table
-python scripts/training/pipeline/sweep.py sweeps/recall_small.yaml
+python guac/pipeline/sweep.py sweeps/recall_small.yaml
 ```
 
 See `sweeps/README.md` for the sweep spec. `param_match` and `flop_match`

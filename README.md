@@ -51,7 +51,7 @@ make stable  # guac-430m config
 Guac introduces **Mixed Layer Architectures** - models that use different computational patterns within the same network. For example, the smaller presets in `model_configs.yaml` repeat a `conv, conv, mamba2, conv` block, while larger presets add mixture-of-experts and mixture-of-heads layers on top.
 
 ### Supported Layer Types
-Defined in `scripts/training/core/custom_architectures.py`:
+Defined in `guac/core/custom_architectures.py`:
 - **`full_attention`**: Standard multi-head attention
 - **`flash_attention`**: Memory-efficient, tiling-based attention
 - **`conv`**: 1D convolution for local pattern recognition
@@ -69,7 +69,7 @@ Defined in `scripts/training/core/custom_architectures.py`:
 - Enables studying different inductive biases within one model
 
 ### 2. **Custom Prompt System**
-- Jinja2-based templating (`scripts/training/core/prompt_templates.py`)
+- Jinja2-based templating (`guac/core/prompt_templates.py`)
 - Custom tokens for multi-sequence boundaries and inference control
 
 ### 3. **Flexible Configuration**

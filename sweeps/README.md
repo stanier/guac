@@ -5,8 +5,8 @@ parameter or FLOP budget, and writes one results table. It is the way to
 answer "what does this layer type contribute?" with numbers.
 
 ```bash
-python scripts/training/pipeline/sweep.py sweeps/recall_small.yaml --dry-run   # sizes and FLOPs only
-python scripts/training/pipeline/sweep.py sweeps/recall_small.yaml             # or: make sweep SPEC=sweeps/recall_small.yaml
+python guac/pipeline/sweep.py sweeps/recall_small.yaml --dry-run   # sizes and FLOPs only
+python guac/pipeline/sweep.py sweeps/recall_small.yaml             # or: make sweep SPEC=sweeps/recall_small.yaml
 ```
 
 Output goes to `scratch/sweeps/<name>/` (or `--output-dir`):
@@ -34,7 +34,7 @@ architectures:                 # name: layer types, or a dict with layer_types p
   based_hybrid: [conv, based, sliding_window_attention, based]
   small_state_mamba: {layer_types: [mamba2, mamba2, mamba2, mamba2], mamba_d_state: 16}
 tasks:
-  - task: mqar                 # mqar, selective_copy, induction, passkey (scripts/training/core/diagnostics.py)
+  - task: mqar                 # mqar, selective_copy, induction, passkey (guac/core/diagnostics.py)
     args: {num_kv_pairs: 16, seq_len: 128, vocab_size: 256}
     steps: 3000                # plus optional batch_size, learning_rate, warmup_steps, eval_every, eval_examples
   - task: lm                   # language modeling: validation perplexity on packed text

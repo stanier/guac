@@ -10,18 +10,12 @@ import os
 from typing import Any, List, Dict, Optional, Tuple
 from datasets import load_dataset, load_from_disk, concatenate_datasets, Dataset, DatasetDict, IterableDataset
 
-try:
-    from .cache_utils import is_saved_dataset
-except ImportError:
-    from scripts.training.core.cache_utils import is_saved_dataset
+from .cache_utils import is_saved_dataset
 
 
 def _get_pretraining_dataset_configs() -> Dict[str, Any]:
     """Look up HF dataset definitions (fineweb, fineweb-edu, etc.) from site_config.yml."""
-    try:
-        from .path_manager import get_dataset_configs
-    except ImportError:
-        from scripts.training.core.path_manager import get_dataset_configs
+    from .path_manager import get_dataset_configs
     return get_dataset_configs().get('pretraining_datasets', {})
 
 

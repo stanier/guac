@@ -8,7 +8,7 @@ This directory contains Slurm jobscripts for running Guac training pipelines on 
 
 Submit the full pipeline with default settings:
 ```bash
-sbatch scripts/training/slurm/full_pipeline.sbatch
+sbatch jobscripts/full_pipeline.sbatch
 ```
 
 ### Customizing Parameters
@@ -18,15 +18,15 @@ You can customize the pipeline by setting environment variables when submitting:
 ```bash
 # Train a smaller model with custom vocab
 sbatch --export=PRETRAIN_CONFIG=guac-910m,VOCAB_SIZE=32000 \
-    scripts/training/slurm/full_pipeline.sbatch
+    jobscripts/full_pipeline.sbatch
 
 # Use different tasks and modes
 sbatch --export=MIDTRAIN_TASK=code,POSTTRAIN_MODE=sft \
-    scripts/training/slurm/full_pipeline.sbatch
+    jobscripts/full_pipeline.sbatch
 
 # Debug mode with profiling
 sbatch --export=DEBUG_MODE=true,ENABLE_PROFILING=true \
-    scripts/training/slurm/full_pipeline.sbatch
+    jobscripts/full_pipeline.sbatch
 ```
 
 ### Configuration Variables
@@ -163,26 +163,26 @@ scancel <jobid>
 ### Quick Test Run (Debug Mode)
 ```bash
 sbatch --export=DEBUG_MODE=true,PRETRAIN_CONFIG=guac-430m,PRETRAIN_STEPS=100 \
-    scripts/training/slurm/full_pipeline.sbatch
+    jobscripts/full_pipeline.sbatch
 ```
 
 ### Code Specialization Pipeline
 ```bash
 sbatch --export=PRETRAIN_CONFIG=guac-4.5b,MIDTRAIN_TASK=code,POSTTRAIN_MODE=sft \
-    scripts/training/slurm/full_pipeline.sbatch
+    jobscripts/full_pipeline.sbatch
 ```
 
 ### Reasoning Specialization with Large Vocab
 ```bash
 sbatch --export=VOCAB_SIZE=100000,PRETRAIN_CONFIG=guac-3b,MIDTRAIN_TASK=reasoning \
-    scripts/training/slurm/full_pipeline.sbatch
+    jobscripts/full_pipeline.sbatch
 ```
 
 ### Production Training (Longer Runtime)
 ```bash
 sbatch --time=72:00:00 \
     --export=PRETRAIN_CONFIG=guac-3b,PRETRAIN_STEPS=50000 \
-    scripts/training/slurm/full_pipeline.sbatch
+    jobscripts/full_pipeline.sbatch
 ```
 
 ## Troubleshooting
@@ -226,12 +226,12 @@ The scripts support checkpointing. To resume from a checkpoint, modify the train
 For custom datasets in mid-training:
 ```bash
 sbatch --export=MIDTRAIN_TASK=custom,MIDTRAIN_DATASETS="/path/to/dataset1 /path/to/dataset2" \
-    scripts/training/slurm/full_pipeline.sbatch
+    jobscripts/full_pipeline.sbatch
 ```
 
 ## Additional Resources
 
 - Main documentation: `docs/`
 - Model configs: `configs/models/`
-- Training scripts: `scripts/training/pipeline/`
+- Training scripts: `guac/pipeline/`
 - Makefile targets: `Makefile`

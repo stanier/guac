@@ -3,16 +3,16 @@
 VocabPipeline — orchestrates the three-stage hierarchical tokenizer build.
 
 Usage (Python):
-    from scripts.training.tokenizer import VocabPipeline, VocabSpec
+    from guac.tokenizer import VocabPipeline, VocabSpec
 
     spec = VocabSpec.from_yaml("vocab_spec.yaml")
     pipeline = VocabPipeline(spec)
     pipeline.run()
 
 Usage (CLI):
-    python -m scripts.training.tokenizer.pipeline --spec vocab_spec.yaml
-    python -m scripts.training.tokenizer.pipeline --spec vocab_spec.yaml --force
-    python -m scripts.training.tokenizer.pipeline --spec vocab_spec.yaml --status
+    python -m guac.tokenizer.pipeline --spec vocab_spec.yaml
+    python -m guac.tokenizer.pipeline --spec vocab_spec.yaml --force
+    python -m guac.tokenizer.pipeline --spec vocab_spec.yaml --status
 """
 
 import argparse

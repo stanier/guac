@@ -93,7 +93,7 @@ model_training_configs:
 
   # Laptop/CPU arithmetic smoke test: guac-43m with a 100-token character-level
   # tokenizer, which leaves 12.5M parameters
-  # (build it first: python -m scripts.training.tokenizer.build_char_tokenizer)
+  # (build it first: python -m guac.tokenizer.build_char_tokenizer)
   guac-13m-arith:
     step_val: 1
     hidden_size: 512

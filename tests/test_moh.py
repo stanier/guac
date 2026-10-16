@@ -10,7 +10,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 import torch
 
-from scripts.training.core.custom_architectures import GroupedQueryAttention, MixedLayerConfig, MixtureOfHeadAttention
+from guac.core.custom_architectures import GroupedQueryAttention, MixedLayerConfig, MixtureOfHeadAttention
 
 HEADS = 4
 

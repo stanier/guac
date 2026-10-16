@@ -104,7 +104,7 @@ install:
 train-tokenizer:
 	@echo "🔤 Training tokenizer..."
 	@echo "📊 Vocab size: $(VOCAB_SIZE) | Datasets: $(DATASETS)"
-	TOKENIZERS_PARALLELISM=false python scripts/training/pipeline/train_tokenizer.py \
+	TOKENIZERS_PARALLELISM=false python guac/pipeline/train_tokenizer.py \
 		--vocab-size $(VOCAB_SIZE) \
 		--datasets $(DATASETS)
 	@echo "✅ Tokenizer training complete"
@@ -119,7 +119,7 @@ tokenize-datasets:
 		echo "  make tokenize-datasets TOKENIZER_PATH=scratch/tokenizers/sentencepiece/shared_60k"; \
 		exit 1; \
 	fi
-	TOKENIZERS_PARALLELISM=false python scripts/training/pipeline/tokenize_datasets.py \
+	TOKENIZERS_PARALLELISM=false python guac/pipeline/tokenize_datasets.py \
 		--tokenizer $(TOKENIZER_PATH) \
 		--datasets $(DATASETS) \
 		--max-length $(MAX_LENGTH) \
@@ -143,7 +143,7 @@ pretrain:
 	@echo "🚀 Starting pre-training stage..."
 	@echo "📊 Config: $(CONFIG) | Datasets: $(DATASETS)"
 	@mkdir -p $(MODEL_DIR)
-	TOKENIZERS_PARALLELISM=false python scripts/training/pipeline/pretrain.py \
+	TOKENIZERS_PARALLELISM=false python guac/pipeline/pretrain.py \
 		--model-config $(CONFIG) \
 		--datasets $(DATASETS) \
 		--output-dir $(PRETRAIN_DIR) \
@@ -159,7 +159,7 @@ midtrain:
 		echo "Run 'make pretrain' first or check CONFIG=$(CONFIG)"; \
 		exit 1; \
 	fi
-	TOKENIZERS_PARALLELISM=false python scripts/training/pipeline/midtrain.py \
+	TOKENIZERS_PARALLELISM=false python guac/pipeline/midtrain.py \
 		--base-model $(PRETRAIN_DIR) \
 		--task $(TASK) \
 		--output-dir $(MIDTRAIN_DIR) \
@@ -178,7 +178,7 @@ posttrain:
 		echo "Run 'make midtrain' first or check TASK=$(TASK) CONFIG=$(CONFIG)"; \
 		exit 1; \
 	fi
-	TOKENIZERS_PARALLELISM=false python scripts/training/pipeline/posttrain.py \
+	TOKENIZERS_PARALLELISM=false python guac/pipeline/posttrain.py \
 		--base-model $(MIDTRAIN_DIR) \
 		--mode $(MODE) \
 		--output-dir $(POSTTRAIN_DIR) \
@@ -260,7 +260,7 @@ arithmetic:
 # Evaluate arithmetic accuracy (defaults to the mid-trained model for CONFIG/TASK)
 EVAL_N ?= 50
 eval-arithmetic:
-	python scripts/training/pipeline/eval_arithmetic.py \
+	python guac/pipeline/eval_arithmetic.py \
 		--model $(or $(MODEL),$(MIDTRAIN_DIR)) \
 		--num-per-category $(EVAL_N)
 
@@ -269,12 +269,12 @@ DIAG_TASK ?= mqar
 LAYERS ?= full_attention,full_attention
 DIAG_ARGS ?=
 diagnostics:
-	python scripts/training/pipeline/run_diagnostics.py --task $(DIAG_TASK) --layer-types $(LAYERS) $(DIAG_ARGS)
+	python guac/pipeline/run_diagnostics.py --task $(DIAG_TASK) --layer-types $(LAYERS) $(DIAG_ARGS)
 
 # Layer-type sweep from a spec (see sweeps/README.md)
 SPEC ?= sweeps/recall_small.yaml
 sweep:
-	python scripts/training/pipeline/sweep.py $(SPEC) $(SWEEP_ARGS)
+	python guac/pipeline/sweep.py $(SPEC) $(SWEEP_ARGS)
 
 # Test installation and basic functionality
 test:
@@ -291,7 +291,7 @@ test-install:
 	@echo "🧪 Testing Guac installation..."
 	@python -c "import torch; print(f'✅ PyTorch: {torch.__version__}')" || echo "❌ PyTorch not installed"
 	@python -c "import transformers; print(f'✅ Transformers: {transformers.__version__}')" || echo "❌ Transformers not installed"
-	@python -c "from scripts.training.core.custom_architectures import MixedLayerForCausalLM; print('✅ Guac architectures')" || echo "❌ Guac imports failed"
+	@python -c "from guac.core.custom_architectures import MixedLayerForCausalLM; print('✅ Guac architectures')" || echo "❌ Guac imports failed"
 	@echo "🏃 Running minimal pipeline test..."
 	$(MAKE) pretrain-debug CONFIG=guac-3b
 	@echo "✅ Installation test complete!"

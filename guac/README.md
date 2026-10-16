@@ -96,7 +96,7 @@ make pipeline-debug
 All scripts use robust import fallbacks:
 ```python
 try:
-    from scripts.training.core.custom_architectures import MixedLayerForCausalLM
+    from guac.core.custom_architectures import MixedLayerForCausalLM
 except ImportError:
     from ..core.custom_architectures import MixedLayerForCausalLM
 except ImportError:

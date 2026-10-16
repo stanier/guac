@@ -6,8 +6,8 @@ Useful for small arithmetic / smoke-test runs where a learned subword vocab
 is overkill or lacks the needed symbols.
 
 Usage:
-    python -m scripts.training.tokenizer.build_char_tokenizer
-    python -m scripts.training.tokenizer.build_char_tokenizer --output scratch/tokenizers/character/ascii
+    python -m guac.tokenizer.build_char_tokenizer
+    python -m guac.tokenizer.build_char_tokenizer --output scratch/tokenizers/character/ascii
 """
 
 import argparse
@@ -16,7 +16,7 @@ import string
 from tokenizers import Tokenizer, Regex, decoders, models, pre_tokenizers, processors
 from transformers import PreTrainedTokenizerFast
 
-from scripts.training.core.prompt_templates import create_prompt_tokenizer
+from guac.core.prompt_templates import create_prompt_tokenizer
 
 
 def build_char_tokenizer(output_dir: str) -> PreTrainedTokenizerFast:

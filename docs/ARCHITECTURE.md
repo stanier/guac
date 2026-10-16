@@ -123,7 +123,7 @@ class ConvMixer:
 
 **Purpose**: Selective state space modeling for efficient long-range dependencies.
 
-**Implementation** (`scripts/training/core/mamba2.py`, following Dao & Gu 2024):
+**Implementation** (`guac/core/mamba2.py`, following Dao & Gu 2024):
 ```python
 class Mamba2Mixer:                 # its block has a SwiGLU FFN unless ffn_types says "none"
     - in_proj -> gate z, input x, B, C (shared by heads within a group), dt per head
@@ -160,7 +160,7 @@ until it has.
 
 **Purpose**: Linear attention that keeps a fixed-size state, from BASED (Arora et al. 2024).
 
-**Implementation** (`BasedMixer`; the scan is in `scripts/training/core/linear_attention.py`):
+**Implementation** (`BasedMixer`; the scan is in `guac/core/linear_attention.py`):
 ```python
 class BasedMixer:
     - q_proj, k_proj: hidden -> based_feature_dim per head (small, 16 by default)
@@ -273,7 +273,7 @@ architectures:
   mixed_layer:
     config_class: "MixedLayerConfig"
     model_class: "MixedLayerForCausalLM"
-    import_path: "scripts.training.custom_architectures"
+    import_path: "guac.custom_architectures"
 
 architecture_defaults:
   mixed_layer:

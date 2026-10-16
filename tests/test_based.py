@@ -13,10 +13,10 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from scripts.training.core.custom_architectures import (
+from guac.core.custom_architectures import (
     BasedMixer, MixedLayerConfig, MixedTransformerLayer, causal_attention, sliding_window_attention,
 )
-from scripts.training.core.linear_attention import causal_linear_attention, taylor_feature_map
+from guac.core.linear_attention import causal_linear_attention, taylor_feature_map
 
 
 def quadratic_linear_attention(q, k, v):

@@ -16,11 +16,11 @@ from datasets import Dataset, DatasetDict, IterableDataset
 from tokenizers import Tokenizer, models, pre_tokenizers
 from transformers import PreTrainedTokenizerFast
 
-from scripts.training.core import dataset_utils
-from scripts.training.core.dataset_utils import (
+from guac.core import dataset_utils
+from guac.core.dataset_utils import (
     PackedSequenceCollator, load_pretraining_splits, pack_documents, split_validation, tokenize_dataset_with_cache,
 )
-from scripts.training.core.pipeline_utils import GuacTrainer, MetricsLoggerCallback, write_run_info
+from guac.core.pipeline_utils import GuacTrainer, MetricsLoggerCallback, write_run_info
 
 
 def make_tokenizer():
@@ -119,7 +119,7 @@ def test_unknown_dataset_is_an_error(monkeypatch):
 
 def test_trainer_logs_perplexity_and_metrics_file(tmp_path):
     from transformers import TrainingArguments
-    from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
+    from guac.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
 
     torch.manual_seed(0)
     model = MixedLayerForCausalLM(MixedLayerConfig(vocab_size=23, hidden_size=32, num_attention_heads=4,
@@ -145,7 +145,7 @@ def test_trainer_logs_perplexity_and_metrics_file(tmp_path):
 
 
 def test_run_info_records_what_reproduces_a_run(tmp_path):
-    from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
+    from guac.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
     model = MixedLayerForCausalLM(MixedLayerConfig(vocab_size=23, hidden_size=32, num_attention_heads=4,
                                                    num_hidden_layers=1, layer_types=["conv"], intermediate_size=64))
     path = write_run_info(str(tmp_path), 'pretraining', {'hidden_size': 32, 'learning_rate': 1e-3}, model=model,

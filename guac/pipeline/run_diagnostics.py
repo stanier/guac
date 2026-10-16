@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
 Train a small model from scratch on a synthetic diagnostic task and report
-held-out accuracy (see scripts/training/core/diagnostics.py for the tasks).
+held-out accuracy (see guac/core/diagnostics.py for the tasks).
 
 Usage:
     # Associative recall with a BASED hybrid
-    python scripts/training/pipeline/run_diagnostics.py --task mqar \\
+    python guac/pipeline/run_diagnostics.py --task mqar \\
         --layer-types conv,based,sliding_window_attention,based --hidden-size 128 --steps 3000 \\
         --task-arg num_kv_pairs=16 --task-arg seq_len=128
 
     # Architecture from a preset, at its own width
-    python scripts/training/pipeline/run_diagnostics.py --task induction --model-config guac-43m
+    python guac/pipeline/run_diagnostics.py --task induction --model-config guac-43m
 
     # Any model setting
-    python scripts/training/pipeline/run_diagnostics.py --task passkey --layer-types mamba2,mamba2 \\
+    python guac/pipeline/run_diagnostics.py --task passkey --layer-types mamba2,mamba2 \\
         --set mamba_d_state=32 --param-match full_attention --output scratch/diagnostics/passkey.json
 """
 
@@ -24,16 +24,16 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 import torch
 import yaml
 
-from scripts.training.core.custom_architectures import MixedLayerForCausalLM
-from scripts.training.core.diagnostics import DEFAULT_VOCAB, TASKS, run_diagnostic
-from scripts.training.core.pipeline_utils import as_number, load_model_config, write_run_info
-from scripts.training.pipeline.pretrain import build_model_config
+from guac.core.custom_architectures import MixedLayerForCausalLM
+from guac.core.diagnostics import DEFAULT_VOCAB, TASKS, run_diagnostic
+from guac.core.pipeline_utils import as_number, load_model_config, write_run_info
+from guac.pipeline.pretrain import build_model_config
 
 
 def parse_assignments(items: Optional[List[str]]) -> Dict[str, Any]:

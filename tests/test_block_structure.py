@@ -12,13 +12,13 @@ sys.path.append(str(Path(__file__).parent.parent))
 import pytest
 import torch
 
-from scripts.training.core.custom_architectures import (
+from guac.core.custom_architectures import (
     MIXERLESS_LAYER_TYPES, SUPPORTED_LAYER_TYPES, MixedLayerConfig, MixedLayerForCausalLM,
     MixedTransformerLayer, block_flops_per_token, block_parameter_counts, flop_matched_ffn_hidden_sizes,
     mixer_flops_per_token, model_flops_per_token, param_matched_ffn_hidden_sizes,
 )
-from scripts.training.core.pipeline_utils import load_model_config
-from scripts.training.pipeline.pretrain import build_model_config
+from guac.core.pipeline_utils import load_model_config
+from guac.pipeline.pretrain import build_model_config
 
 HIDDEN = 32
 MIXER_TYPES = [t for t in SUPPORTED_LAYER_TYPES if t not in MIXERLESS_LAYER_TYPES]

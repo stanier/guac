@@ -12,11 +12,11 @@ import pytest
 import torch
 import yaml
 
-from scripts.training.core.custom_architectures import (
+from guac.core.custom_architectures import (
     ROTARY_LAYER_TYPES, MixedLayerConfig, MixedLayerForCausalLM, MixedTransformerLayer, RotaryEmbedding,
 )
-from scripts.training.core.pipeline_utils import load_model_config
-from scripts.training.pipeline.pretrain import build_model_config
+from guac.core.pipeline_utils import load_model_config
+from guac.pipeline.pretrain import build_model_config
 
 project_root = Path(__file__).parent.parent
 

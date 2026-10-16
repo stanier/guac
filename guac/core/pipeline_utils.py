@@ -22,7 +22,7 @@ from transformers import Trainer, TrainerCallback, TrainingArguments, EarlyStopp
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Project setup
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent
 
 
 def as_number(value: Any) -> Any:
@@ -172,19 +172,8 @@ def get_output_directory(
     if output_dir:
         return output_dir
 
-    try:
-        from .path_manager import get_model_output_path
-        return str(get_model_output_path(training_type, model_name, **kwargs))
-    except ImportError:
-        suffix = ""
-        if 'task' in kwargs:
-            suffix = f"_{kwargs['task']}"
-        elif 'mode' in kwargs:
-            suffix = f"_{kwargs['mode']}"
-
-        default_dir = f"./models/{training_type.replace('training', 'train')}{suffix}_{model_name}"
-        os.makedirs(default_dir, exist_ok=True)
-        return default_dir
+    from .path_manager import get_model_output_path
+    return str(get_model_output_path(training_type, model_name, **kwargs))
 
 
 def run_training_loop(trainer: Any, resume_checkpoint: Optional[str] = None) -> Any:

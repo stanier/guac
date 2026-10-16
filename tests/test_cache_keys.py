@@ -11,9 +11,9 @@ import pytest
 from tokenizers import Tokenizer, models, pre_tokenizers
 from transformers import PreTrainedTokenizerFast
 
-from scripts.training.core import dataset_utils
-from scripts.training.core.cache_utils import tokenizer_cache_tag
-from scripts.training.pipeline.pretrain import pretraining_cache_key
+from guac.core import dataset_utils
+from guac.core.cache_utils import tokenizer_cache_tag
+from guac.pipeline.pretrain import pretraining_cache_key
 
 
 def make_tokenizer(words):

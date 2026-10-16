@@ -16,7 +16,7 @@ from pathlib import Path
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 from transformers import (
@@ -26,37 +26,17 @@ from transformers import (
 )
 from datasets import load_dataset, load_from_disk, concatenate_datasets, IterableDataset
 
-try:
-    from scripts.training.core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
-    from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes, flop_matched_ffn_hidden_sizes
-    from scripts.training.core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
-    from scripts.training.core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
-    from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
-except ImportError:
-    try:
-        from ..core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
-        from ..core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes, flop_matched_ffn_hidden_sizes
-        from ..core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
-        from ..core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
-        from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
-    except ImportError:
-        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        sys.path.insert(0, parent_dir)
-        from core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
-        from core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes, flop_matched_ffn_hidden_sizes
-        from core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
-        from core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
-        from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
+from guac.core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
+from guac.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM, param_matched_ffn_hidden_sizes, flop_matched_ffn_hidden_sizes
+from guac.core.pipeline_utils import load_model_config, get_output_directory, run_training_loop, save_trained_model, GuacTrainer, MetricsLoggerCallback, make_training_arguments, write_run_info
+from guac.core.dataset_utils import load_pretraining_splits, tokenize_dataset_with_cache, get_pretraining_dataset_settings, PackedSequenceCollator
+from guac.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, content_hash, tokenizer_fingerprint
 
 
 def load_tokenizer(config: Dict[str, Any]) -> Any:
     """Load pre-trained tokenizer for pre-training."""
-    default_tokenizer = 'scratch/tokenizers/sentencepiece/shared_60k'
-    try:
-        from scripts.training.core.path_manager import get_tokenizer_output_path
-        default_tokenizer = str(get_tokenizer_output_path("sentencepiece", "shared_60k"))
-    except ImportError:
-        pass
+    from guac.core.path_manager import get_tokenizer_output_path
+    default_tokenizer = str(get_tokenizer_output_path("sentencepiece", "shared_60k"))
 
     tokenizer_path = config.get('tokenizer_model_path', default_tokenizer)
 
@@ -71,7 +51,7 @@ def load_tokenizer(config: Dict[str, Any]) -> Any:
         raise ValueError(
             f"Tokenizer not found at {tokenizer_path}\n"
             f"Please train a tokenizer first using:\n"
-            f"  python scripts/training/pipeline/train_tokenizer.py --vocab-size {vocab_size}\n"
+            f"  python guac/pipeline/train_tokenizer.py --vocab-size {vocab_size}\n"
             f"Or use the Makefile:\n"
             f"  make train-tokenizer VOCAB_SIZE={vocab_size}"
         )

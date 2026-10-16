@@ -18,13 +18,13 @@ from pathlib import Path
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
 import torch
 
-from scripts.training.core.arithmetic import CATEGORIES, SPLIT_VERSION, evaluate_accuracy, load_format
-from scripts.training.core.pipeline_utils import load_base_model
+from guac.core.arithmetic import CATEGORIES, SPLIT_VERSION, evaluate_accuracy, load_format
+from guac.core.pipeline_utils import load_base_model
 
 
 def main():

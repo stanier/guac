@@ -12,8 +12,8 @@ sys.path.append(str(project_root))
 import pytest
 import yaml
 
-from scripts.training.core.pipeline_utils import load_model_config
-from scripts.training.pipeline.pretrain import build_model_config, create_training_arguments
+from guac.core.pipeline_utils import load_model_config
+from guac.pipeline.pretrain import build_model_config, create_training_arguments
 
 PRESETS = list(yaml.safe_load((project_root / "model_configs.yaml").read_text())['model_training_configs'])
 
@@ -73,7 +73,7 @@ def test_preset_numbers_in_scientific_notation_are_numbers():
 
 
 def test_training_arguments_share_stage_conventions(tmp_path):
-    from scripts.training.core.pipeline_utils import make_training_arguments
+    from guac.core.pipeline_utils import make_training_arguments
     import torch
 
     args = make_training_arguments(str(tmp_path), fp16=True, report_to='none', per_device_train_batch_size=2)
@@ -87,7 +87,7 @@ def test_midtraining_text_tasks_load_and_tokenize_datasets_from_disk(tmp_path):
     from datasets import Dataset
     from tokenizers import Tokenizer, models, pre_tokenizers
     from transformers import PreTrainedTokenizerFast
-    from scripts.training.pipeline.midtrain import prepare_task_dataset
+    from guac.pipeline.midtrain import prepare_task_dataset
 
     backend = Tokenizer(models.WordLevel({"[UNK]": 0, "a": 1, "b": 2}, unk_token="[UNK]"))
     backend.pre_tokenizer = pre_tokenizers.Whitespace()

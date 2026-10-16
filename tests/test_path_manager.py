@@ -13,7 +13,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from scripts.training.core.path_manager import get_path_manager
+from guac.core.path_manager import get_path_manager
 
 
 def test_path_manager():

@@ -12,9 +12,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 import pytest
 import yaml
 
-from scripts.training.pipeline import sweep
-from scripts.training.core.custom_architectures import block_parameter_counts
-from scripts.training.pipeline.pretrain import build_model_config
+from guac.pipeline import sweep
+from guac.core.custom_architectures import block_parameter_counts
+from guac.pipeline.pretrain import build_model_config
 
 SPEC = {
     'name': 'tiny',

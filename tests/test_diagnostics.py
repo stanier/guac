@@ -13,11 +13,11 @@ sys.path.append(str(Path(__file__).parent.parent))
 import pytest
 import torch
 
-from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
-from scripts.training.core.diagnostics import (
+from guac.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
+from guac.core.diagnostics import (
     IGNORE, TASKS, answer_accuracy, make_batch, run_diagnostic, run_language_modeling,
 )
-from scripts.training.pipeline.run_diagnostics import diagnostic_model_config, parse_assignments
+from guac.pipeline.run_diagnostics import diagnostic_model_config, parse_assignments
 
 
 def answers(batch):
