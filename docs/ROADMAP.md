@@ -6,10 +6,11 @@ probe script or on real checkpoints, not just read off the code.
 
 **Status (2026-10-16):** every phase of the review plan has landed: Phase 0
 (correctness), Phase 1 (mechanism fidelity), Phase 2 (research
-infrastructure) and Phase 3 (cleanup), plus the known issues it listed. What
-is left is in [Open Items](#open-items): mostly verification that needs a GPU
-or network access, and a few limitations that were measured and documented
-instead of fixed.
+infrastructure) and Phase 3 (cleanup), plus the known issues it listed, and
+the open items that could be done without a GPU or network access (Mamba-2's
+linear inter-chunk scan, per-document resets for packed sequences, GPU-scale
+sweep specs). What is left is in [Open Items](#open-items): running things on
+a cluster, and decisions for the user.
 
 ## Where Things Stand
 
@@ -17,7 +18,7 @@ instead of fixed.
 |--------|--------------------------|---------|
 | `phase-0-correctness` | `3219380`, `761c30f` | Pre-review pending work, then the Phase 0 fixes |
 | `phase-1-mamba2` | the above + `446bd60` + `8fdeb01` | Mamba-2 rewrite and the first version of this doc |
-| `claude/vibrant-darwin-vs3o5o` | the above + everything below | Phases 1.1 to 3; **continue from here** |
+| `claude/vibrant-darwin-vs3o5o` | the above + everything below | Phases 1.1 to 3 and the follow-ups; **continue from here** |
 
 None of these branches is merged into `main`. Each item landed as its own commit with tests.
 
@@ -160,6 +161,26 @@ pytest with CPU CI.
   with unknown columns; absolute positions shifted under left padding; the
   tokenizer fingerprint depended on the last call's truncation settings.
 
+### Follow-ups from the open items
+
+- **SLURM guide (`8271aa3`):** an example exported without `ALL`, the size
+  ordering was wrong, and it pointed at a `configs/models/` that doesn't exist.
+- **GPU-scale sweeps (`e9ae932`):** `sweeps/recall_scaled.yaml` (4 layers,
+  hidden 256, 9 architectures, MQAR with 16/32/64 pairs, induction, selective
+  copying, passkey, 3 seeds: 162 runs) and `sweeps/lm_scaled.yaml` (WikiText-103
+  perplexity). `jobscripts/sweep.sbatch` runs a spec as a job array
+  (`sweep.py --shard I/N`, one shared table, `--summarize`); `--param-match` /
+  `--flop-match` override a spec's budget; `bf16: true` trains under bfloat16
+  autocast.
+- **Linear Mamba-2 scan (`bf3bdff`):** the recurrence over chunk states recurses
+  into `ssd_chunked` past `2 * chunk_size` chunks, so cost is linear at any
+  length (1.53 MFLOP/token at 64k tokens for a 256-wide mixer, was 3.49).
+- **Document boundaries (`ec57c32`):** `reset_at_document_boundaries` (or
+  `pretrain.py --reset-at-document-boundaries`) splits packed rows at EOS; every
+  mixer then keeps documents apart, exactly (tested per layer type, values and
+  gradients). Off by default. Models now take pad/BOS/EOS ids from the
+  tokenizer (configs all said EOS 2; the character tokenizer's is 3).
+
 ## First Sweep Results
 
 `sweeps/recall_small.yaml` (2 layers, hidden 64, every block parameter-matched
@@ -238,15 +259,14 @@ What the table shows, at this small budget:
 | Item | Notes |
 |------|-------|
 | Run the GPU tests | `test_kernel_scan_matches_torch_scan` (needs CUDA + `mamba_ssm`); then consider defaulting `mamba_scan_impl` to the kernel on CUDA |
-| Mamba-2 inter-chunk pass is quadratic in the number of chunks | As in the reference `ssd_minimal`: negligible below ~4k tokens at chunk 64, dominant at 8k+ (visible in `block_flops_per_token`). A sequential scan over chunk states would make it linear |
-| Packing doesn't reset at document boundaries | Standard GPT-style packing: attention and recurrent state run across EOS. A per-document mask would need support in every mixer (and `seq_idx` for Mamba-2) |
 | Network-dependent defaults are unrun here | codeparrot-clean-valid (`content`), GSM8K (`question`/`answer`), alpaca, ultrachat (`messages`) and the `fineweb` site-config entries were written from their dataset cards; the offline paths are tested |
-| Sweeps at scale | The example sweep is CPU-sized. Larger hidden sizes, more seeds, `flop_match`, the `lm` task on real text, and selective copying and passkey are untried |
+| Run the scaled sweeps | `sbatch jobscripts/sweep.sbatch` (parameter-matched), again with `BUDGET="--flop-match full_attention"`, and with `SPEC=sweeps/lm_scaled.yaml`. Untested on a GPU: the specs' settings (steps, learning rate, batch size) are first guesses, and one learning rate for every architecture is a confound (see the spec's comment). Also worth a run: `lm_scaled.yaml` with `reset_at_document_boundaries: true` in `base` |
+| Document resets on GPU | `reset_at_document_boundaries` is tested on CPU only; the `mamba_ssm` kernel path passes `seq_idx` untested. With it on, attention uses an explicit mask instead of the causal FlashAttention path; a varlen kernel would avoid that |
 | Preset batch sizes | See Behavior Changes; the user's call |
 | MoE dispatch syncs | `bincount(...).tolist()` is one host sync per MoE layer per step; fine at research scale |
 | No fused kernels for BASED and sliding-window attention | Plain PyTorch; BASED's step is ~1.5× attention's at small sizes on CPU |
 | transformers 4.46.3 `Mamba2Mixer` | Its CPU path is slightly wrong in the final partial chunk; `tests/test_mamba2.py` works around it |
-| CI | `.github/workflows/tests.yml` hasn't been observed running on GitHub |
+| CI | `.github/workflows/tests.yml` has been pushed on several branches, but GitHub lists no workflows and no runs for the repository (checked 2026-10-16), so Actions is probably disabled in the repository settings |
 | `docs/modules.txt` | Cluster module versions (Transformers 4.39/4.44) predate the pinned 4.46.3 |
 
 ## Working Conventions
