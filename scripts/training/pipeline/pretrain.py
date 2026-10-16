@@ -379,6 +379,12 @@ def pretraining_cache_key(dataset_names: List[str], tokenizer: Any, max_length: 
     return f"{readable}_{content_hash(settings)}"
 
 
+# Preset keys passed straight through to MixedLayerConfig (per-layer-type settings)
+LAYER_SETTING_PREFIXES = (
+    'num_experts', 'num_shared_experts', 'moe_', 'moh_', 'mamba_', 'based_', 'conv_', 'sliding_window_',
+)
+
+
 def build_model_config(config: Dict[str, Any], vocab_size: int) -> MixedLayerConfig:
     """
     Build the MixedLayerConfig for a model_configs.yaml entry (validates layer types).
@@ -400,7 +406,7 @@ def build_model_config(config: Dict[str, Any], vocab_size: int) -> MixedLayerCon
         tie_word_embeddings=config.get('tie_word_embeddings', True),
         ffn_types=config.get('ffn_types'),
         ffn_hidden_sizes=config.get('ffn_hidden_sizes'),
-        **{k: v for k, v in config.items() if k.startswith(('num_experts', 'num_shared_experts', 'moe_', 'moh_'))}
+        **{k: v for k, v in config.items() if k.startswith(LAYER_SETTING_PREFIXES)}
     )
     param_match = config.get('param_match')
     if param_match:

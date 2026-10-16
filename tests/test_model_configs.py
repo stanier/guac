@@ -52,3 +52,15 @@ def test_training_arguments_use_config_values_as_given(tmp_path):
 def test_training_arguments_respect_explicit_max_steps(tmp_path):
     args = create_training_arguments({'fp16': False}, str(tmp_path), max_steps=50)
     assert args.max_steps == 50
+
+
+def test_build_model_config_passes_layer_type_settings_through():
+    config = {**load_model_config('guac-106m'), 'mamba_d_state': 32, 'based_feature_dim': 8,
+              'based_chunk_size': 16, 'conv_kernel_size': 5, 'sliding_window_size': 128}
+    model_config = build_model_config(config, vocab_size=100)
+
+    assert model_config.mamba_d_state == 32
+    assert model_config.based_feature_dim == 8
+    assert model_config.based_chunk_size == 16
+    assert model_config.conv_kernel_size == 5
+    assert model_config.sliding_window_size == 128

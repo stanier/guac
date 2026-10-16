@@ -14,12 +14,13 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerationMixin
 from typing import Optional, Tuple, Union, List, Dict, Any
 
+from .linear_attention import causal_linear_attention, taylor_feature_map
 from .mamba2 import Mamba2Mixer
 
 
 SUPPORTED_LAYER_TYPES = (
     "full_attention", "conv", "mlp_only", "mamba2", "based",
-    "flash_attention", "moh_attention", "shared_expert_moe",
+    "flash_attention", "moh_attention", "shared_expert_moe", "sliding_window_attention",
 )
 
 # Layer types whose block has only the FFN (shared_expert_moe defaults its FFN to MoE)
@@ -33,14 +34,15 @@ def default_ffn_type(layer_type: str) -> str:
     return "moe" if layer_type == "shared_expert_moe" else "swiglu"
 
 
-def causal_attention(query, key, value, attention_mask=None, dropout_p=0.0):
+def causal_attention(query, key, value, attention_mask=None, dropout_p=0.0, window=None):
     """
     Causal scaled dot-product attention shared by every softmax-attention layer.
 
     query is (batch, heads, seq, head_dim); key and value are
     (batch, kv_heads, seq, head_dim) with heads a multiple of kv_heads
     (grouped-query attention). attention_mask is an optional (batch, seq)
-    key padding mask with 1 for real tokens and 0 for padding.
+    key padding mask with 1 for real tokens and 0 for padding. With `window`,
+    each position attends only to the last `window` positions, itself included.
 
     F.scaled_dot_product_attention picks a FlashAttention or memory-efficient
     kernel when the device and dtype support it, and the math kernel otherwise.
@@ -49,6 +51,9 @@ def causal_attention(query, key, value, attention_mask=None, dropout_p=0.0):
     if num_kv_groups > 1:
         key = key.repeat_interleave(num_kv_groups, dim=1)
         value = value.repeat_interleave(num_kv_groups, dim=1)
+
+    if window is not None and window < query.size(2):
+        return sliding_window_attention(query, key, value, window, attention_mask, dropout_p)
 
     # Without padding the causal mask alone is exact, and is_causal=True lets
     # PyTorch use its fastest kernels
@@ -63,6 +68,53 @@ def causal_attention(query, key, value, attention_mask=None, dropout_p=0.0):
     # layers spread it to real tokens through 0 * NaN
     allowed = allowed | torch.eye(seq_len, dtype=torch.bool, device=query.device)
     return F.scaled_dot_product_attention(query, key, value, attn_mask=allowed, dropout_p=dropout_p)
+
+
+def sliding_window_attention(query, key, value, window, attention_mask=None, dropout_p=0.0):
+    """
+    Causal attention where position t sees positions t - window + 1 through t.
+
+    query, key and value are (batch, heads, seq, head_dim) with the same head
+    count. The sequence is split into blocks of `window` positions, and each
+    block attends to itself and the block before it, so time and memory grow
+    as seq * window rather than seq^2.
+    """
+    batch, heads, length, _ = query.shape
+    key_valid = (torch.ones(batch, length, dtype=torch.bool, device=query.device)
+                 if attention_mask is None else attention_mask.bool())
+    pad = (-length) % window
+    if pad:
+        query, key, value = (F.pad(t, (0, 0, 0, pad)) for t in (query, key, value))
+        key_valid = F.pad(key_valid, (0, pad))
+    num_blocks = query.size(2) // window
+
+    def blocks(t):  # (batch, heads, blocks * window, dim) -> (batch, blocks, heads, window, dim)
+        return t.reshape(batch, heads, num_blocks, window, -1).transpose(1, 2)
+
+    def with_previous_block(t):  # concatenate each block after the one before it (zeros for the first)
+        return torch.cat([torch.cat([torch.zeros_like(t[:, :1]), t[:, :-1]], dim=1), t], dim=-2)
+
+    query = blocks(query)
+    key, value = (with_previous_block(blocks(t)) for t in (key, value))
+    key_valid = key_valid.reshape(batch, num_blocks, window)
+    key_valid = torch.cat([torch.cat([torch.zeros_like(key_valid[:, :1]), key_valid[:, :-1]], dim=1),
+                           key_valid], dim=-1)  # (batch, blocks, 2 * window)
+
+    # Query i of a block is at offset window + i among its 2 * window keys, so it
+    # may see keys i + 1 through i + window (the last one being itself)
+    offsets = torch.arange(2 * window, device=query.device)
+    rows = torch.arange(window, device=query.device)[:, None]
+    in_window = (offsets > rows) & (offsets <= rows + window)
+    allowed = in_window & key_valid[:, :, None, :]
+    # As in causal_attention, always allow attending to itself so no row is fully masked
+    allowed = allowed | (offsets == rows + window)
+
+    out = F.scaled_dot_product_attention(
+        query.flatten(0, 1), key.flatten(0, 1), value.flatten(0, 1),
+        attn_mask=allowed.flatten(0, 1)[:, None], dropout_p=dropout_p,
+    )
+    out = out.reshape(batch, num_blocks, heads, window, -1).transpose(1, 2)
+    return out.reshape(batch, heads, num_blocks * window, -1)[:, :, :length]
 
 
 class RMSNorm(nn.Module):
@@ -407,10 +459,13 @@ class MixedLayerConfig(PretrainedConfig):
         mamba_headdim=64,
         mamba_ngroups=1,
         mamba_chunk_size=64,  # Scan chunk length; affects speed and memory, not results
-        # BASED specific parameters
-        based_feature_dim=16,
-        based_num_key_value_heads=None,  # Will default to num_attention_heads
-        based_num_heads=None,            # Will default to num_attention_heads
+        # BASED linear attention parameters (Arora et al. 2024)
+        based_feature_dim=16,            # Query/key size per head before the Taylor feature map
+        based_num_key_value_heads=None,  # Defaults to num_kv_heads
+        based_num_heads=None,            # Defaults to num_attention_heads
+        based_chunk_size=64,             # Chunk length of the linear-attention scan; affects speed, not results
+        # Sliding-window attention: each position sees the last sliding_window_size positions
+        sliding_window_size=64,
         pad_token_id=0,
         bos_token_id=1,
         eos_token_id=2,
@@ -451,6 +506,8 @@ class MixedLayerConfig(PretrainedConfig):
         self.based_feature_dim = based_feature_dim
         self.based_num_key_value_heads = based_num_key_value_heads if based_num_key_value_heads is not None else self.num_kv_heads
         self.based_num_heads = based_num_heads if based_num_heads is not None else num_attention_heads
+        self.based_chunk_size = based_chunk_size
+        self.sliding_window_size = sliding_window_size
 
         # Rotary Position Embedding parameters
         self.use_rope = kwargs.get('use_rope', True)
@@ -505,6 +562,15 @@ class MixedLayerConfig(PretrainedConfig):
         if min(self.ffn_hidden_sizes, default=1) < 1:
             raise ValueError(f"ffn_hidden_sizes must all be positive, got {self.ffn_hidden_sizes}")
 
+        if "based" in self.layer_types:
+            if hidden_size % self.based_num_heads:
+                raise ValueError(f"hidden_size {hidden_size} must be divisible by based_num_heads {self.based_num_heads}")
+            if self.based_num_heads % self.based_num_key_value_heads:
+                raise ValueError(f"based_num_heads {self.based_num_heads} must be divisible by "
+                                 f"based_num_key_value_heads {self.based_num_key_value_heads}")
+        if "sliding_window_attention" in self.layer_types and sliding_window_size < 1:
+            raise ValueError(f"sliding_window_size must be positive, got {sliding_window_size}")
+
         if "mamba2" in self.layer_types:
             mamba_inner = int(mamba_expand * hidden_size)
             if mamba_inner % mamba_headdim:
@@ -549,6 +615,9 @@ class GroupedQueryAttention(nn.Module):
     Supports both multi-head attention and grouped query attention patterns.
     """
 
+    # Attention span in positions; None attends to the whole prefix
+    window = None
+
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -580,11 +649,22 @@ class GroupedQueryAttention(nn.Module):
 
         attn_output = causal_attention(
             query_states, key_states, value_states, attention_mask,
-            dropout_p=self.attention_dropout if self.training else 0.0,
+            dropout_p=self.attention_dropout if self.training else 0.0, window=self.window,
         )
 
         attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_length, self.hidden_size)
         return self.o_proj(attn_output)
+
+
+class SlidingWindowAttention(GroupedQueryAttention):
+    """
+    Grouped-query attention over only the last config.sliding_window_size
+    positions. Small windows (64 in BASED) give exact local recall at linear cost.
+    """
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.window = config.sliding_window_size
 
 
 class ConfigMamba2Mixer(Mamba2Mixer):
@@ -608,94 +688,61 @@ class ConfigMamba2Mixer(Mamba2Mixer):
 
 class BasedMixer(nn.Module):
     """
-    BASED (Bidirectional Attention with Sparse Efficient Decoding) mixer.
-    Uses feature maps over queries and keys for its attention scores.
+    BASED linear attention (Arora et al. 2024, arXiv:2402.18668).
+
+    Queries and keys are projected to based_feature_dim per head and expanded
+    by the 2nd-order Taylor feature map, so phi(q) . phi(k) approximates
+    exp(q . k / sqrt(d)). Attention is the normalized causal linear form
+
+        y_i = sum_{j<=i} phi(q_i) . phi(k_j) v_j / sum_{j<=i} phi(q_i) . phi(k_j)
+
+    computed in chunks (see linear_attention.py), so cost is linear in the
+    sequence length and generation keeps a fixed-size state. The BASED paper
+    pairs these layers with small sliding_window_attention layers (and short
+    convolutions) for exact local recall; build that as a layer_types pattern.
     """
 
     def __init__(self, config):
         super().__init__()
-        self.config = config
         self.hidden_size = config.hidden_size
         self.feature_dim = config.based_feature_dim
         self.num_heads = config.based_num_heads
         self.num_key_value_heads = config.based_num_key_value_heads
         self.head_dim = self.hidden_size // self.num_heads
+        self.chunk_size = config.based_chunk_size
 
-        assert self.hidden_size % self.num_heads == 0
-
-        # Query, Key, Value projections
-        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.feature_dim, bias=False)
+        self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.feature_dim, bias=False)
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-
-        # Feature map projections for efficient attention
-        self.feature_map = nn.Sequential(
-            nn.Linear(self.head_dim, self.feature_dim),
-            nn.ReLU()
-        )
-
-        # Output projection
-        self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
 
     def forward(self, hidden_states, attention_mask=None):
         batch_size, seq_len, _ = hidden_states.shape
 
-        # Project to Q, K, V
-        q = self.q_proj(hidden_states)
-        k = self.k_proj(hidden_states)
-        v = self.v_proj(hidden_states)
+        q = self.q_proj(hidden_states).view(batch_size, seq_len, self.num_heads, self.feature_dim).transpose(1, 2)
+        k = self.k_proj(hidden_states).view(batch_size, seq_len, self.num_key_value_heads, self.feature_dim).transpose(1, 2)
+        v = self.v_proj(hidden_states).view(batch_size, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-        # Reshape for multi-head attention
-        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(batch_size, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        v = v.view(batch_size, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        # The feature map squares its inputs and the scan sums over the sequence, so run both in float32
+        compute_dtype = torch.promote_types(v.dtype, torch.float32)
+        with torch.autocast(device_type=hidden_states.device.type, enabled=False):
+            q = taylor_feature_map(q.to(compute_dtype))
+            k = taylor_feature_map(k.to(compute_dtype))
+            v = v.to(compute_dtype)
+            if attention_mask is not None:
+                # The feature map has a constant term, so padded keys must be zeroed explicitly
+                keep = attention_mask[:, None, :, None].to(compute_dtype)
+                k, v = k * keep, v * keep
 
-        # Expand k, v for grouped attention if needed
-        if self.num_heads != self.num_key_value_heads:
-            k = k.repeat_interleave(self.num_heads // self.num_key_value_heads, dim=1)
-            v = v.repeat_interleave(self.num_heads // self.num_key_value_heads, dim=1)
+            groups = self.num_heads // self.num_key_value_heads
+            if groups > 1:
+                k = k.repeat_interleave(groups, dim=1)
+                v = v.repeat_interleave(groups, dim=1)
 
-        # Apply feature maps to queries and keys
-        q_features = self.feature_map(q)  # (B, H, L, F)
-        k_features = self.feature_map(k)  # (B, H, L, F)
+            y, _ = causal_linear_attention(q, k, v, self.chunk_size)
 
-        # BASED attention using feature maps
-        attn_output = self._based_attention(q_features, k_features, v, attention_mask)
-
-        # Reshape and project output
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.view(batch_size, seq_len, self.hidden_size)
-        return self.o_proj(attn_output)
-
-    def _based_attention(self, q_features, k_features, v, attention_mask=None):
-        """BASED attention computation using feature maps."""
-        batch_size, num_heads, seq_len, feature_dim = q_features.shape
-
-        # Compute cumulative sums for efficient attention
-        # This is a simplified version - real BASED uses more sophisticated feature maps
-        k_cumsum = torch.cumsum(k_features, dim=2)  # (B, H, L, F)
-
-        # Compute attention scores via feature map
-        scores = torch.einsum('bhif,bhjf->bhij', q_features, k_cumsum)
-
-        # Apply causal mask with safe large negative value instead of -inf
-        causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=q_features.device))
-        scores = scores.masked_fill(causal_mask.unsqueeze(0).unsqueeze(0) == 0, -1e4)  # Safe large negative
-
-        # Apply attention mask if provided
-        if attention_mask is not None:
-            extended_mask = attention_mask[:, None, None, :]
-            extended_mask = (1.0 - extended_mask) * -1e4  # Safe large negative
-            scores = scores + extended_mask
-
-        # Clamp scores to prevent extreme values
-        scores = torch.clamp(scores, min=-1e4, max=1e4)
-
-        # Softmax and apply to values
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_output = torch.matmul(attn_weights, v)
-
-        return attn_output
+        y = y.transpose(1, 2).reshape(batch_size, seq_len, self.num_heads * self.head_dim)
+        return self.o_proj(y.to(hidden_states.dtype))
 
 
 class MixtureOfHeadAttention(nn.Module):
@@ -987,6 +1034,7 @@ MIXERS = {
     "flash_attention": GroupedQueryAttention,
     "moh_attention": MixtureOfHeadAttention,
     "shared_expert_moe": None,
+    "sliding_window_attention": SlidingWindowAttention,
 }
 assert tuple(MIXERS) == SUPPORTED_LAYER_TYPES
 assert {t for t, mixer in MIXERS.items() if mixer is None} == set(MIXERLESS_LAYER_TYPES)

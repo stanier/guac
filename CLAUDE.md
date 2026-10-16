@@ -54,7 +54,8 @@ The core novelty is `MixedLayerConfig` in `scripts/training/core/custom_architec
 - **MLP-only**: Point-wise feed-forward, O(d²), no sequence mixing
 - **Conv1D**: Local pattern recognition with configurable kernel size
 - **Mamba-2**: Selective state space — efficient long-range dependencies
-- **BASED**: Linear attention via feature maps, O(L·F)
+- **BASED**: Linear attention with a Taylor feature map and a fixed-size state (scan in `linear_attention.py`)
+- **Sliding-window attention**: Softmax attention over a short local window, as paired with BASED
 - **Flash Attention**: Tiling-based full attention, memory-efficient
 - **Standard Attention**: Multi-head with grouped query support
 

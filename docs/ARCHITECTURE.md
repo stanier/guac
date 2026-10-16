@@ -129,26 +129,43 @@ transformers' version.
 
 ### 4. BASED Layers
 
-**Purpose**: Bidirectional Attention with Sparse Efficient Decoding using feature maps.
+**Purpose**: Linear attention that keeps a fixed-size state, from BASED (Arora et al. 2024).
 
-**Implementation**:
+**Implementation** (`BasedMixer`; the scan is in `scripts/training/core/linear_attention.py`):
 ```python
 class BasedMixer:
-    - Query/Key/Value projections
-    - Feature map transformations
-    - Cumulative sum operations
-    - Attention via feature maps, then output projection
+    - q_proj, k_proj: hidden -> based_feature_dim per head (small, 16 by default)
+    - v_proj: hidden -> head_dim per KV head (grouped-query heads supported)
+    - 2nd-order Taylor feature map: phi(x) = [1, x / d^(1/4), vec(x x^T) / sqrt(2d)],
+      so phi(q).phi(k) = 1 + s + s^2/2 with s = q.k / sqrt(d)  (approximates exp(s))
+    - Normalized causal linear attention:
+      y_i = sum_{j<=i} phi(q_i).phi(k_j) v_j / sum_{j<=i} phi(q_i).phi(k_j)
+    - Output projection
 ```
 
-**Key Innovation**:
-- **Feature Maps**: ReLU(Linear(head_dim → feature_dim))
-- **Efficient Computation**: O(L·F) instead of O(L²) where F=feature_dim
-- **Causality**: Maintained through cumulative operations
+**The scan** is chunked: quadratic inside each chunk of `based_chunk_size` tokens,
+plus a running state `sum_j phi(k_j) v_j^T` between chunks. It is tested against
+the quadratic form written out directly, values and gradients, and runs in float32
+under mixed precision. Padded keys are zeroed (the feature map has a constant
+term, so they would otherwise count), so left and right padding are both handled.
+
+The BASED paper pairs these layers with small sliding-window attention layers
+(and short convolutions) for exact local recall. Build that as a `layer_types`
+pattern, for example `[conv, based, sliding_window_attention, ...]`.
 
 **Characteristics**:
-- **Complexity**: O(d² + h·f·L) where h=heads, f=feature_dim
-- **Memory**: O(h·f·L)
-- **Use Cases**: Medium-range dependencies, attention approximation
+- **Complexity**: O(L·F·P) per head, with F = 1 + f + f² expanded features (273 for f = 16) and head size P
+- **Memory**: O(F·P) state per head at inference
+- **Use Cases**: Associative recall at linear cost; pair with sliding-window attention
+
+### 4b. Sliding-Window Attention Layers
+
+**Purpose**: Exact softmax attention over a short local window.
+
+`sliding_window_attention` is `GroupedQueryAttention` in which each position sees
+only the last `sliding_window_size` positions (itself included; 64 by default, as
+in BASED). The sequence is split into window-sized blocks that each attend to
+themselves and the previous block, so cost grows as L·w rather than L².
 
 ### 5. Flash Attention Layers
 
@@ -232,9 +249,13 @@ mamba_ngroups: 1          # B/C groups shared across heads (heads must divide ev
 mamba_chunk_size: 64      # Scan chunk length: speed/memory only, results are identical
 
 # BASED parameters
-based_feature_dim: 8      # Feature map dimension
-based_num_heads: 8        # Number of attention heads
-based_num_key_value_heads: 4  # Number of KV heads
+based_feature_dim: 16     # Query/key size per head before the Taylor feature map
+based_num_heads: 8        # Number of heads (default num_attention_heads)
+based_num_key_value_heads: 4  # Number of KV heads (default num_kv_heads)
+based_chunk_size: 64      # Scan chunk length: speed/memory only, results are identical
+
+# Sliding-window attention
+sliding_window_size: 64   # Positions each token sees, itself included
 
 # Convolutional parameters
 conv_kernel_size: 3       # 1D convolution kernel
@@ -250,7 +271,8 @@ conv_groups: 1            # Depthwise grouping
 | MLP-only          | O(d²)            | O(d)           | O(1)            |
 | Convolutional     | O(d² + d·k)      | O(d·k)         | O(1)            |
 | Mamba-2           | O(d² + d·s)      | O(d·s)         | O(1)            |
-| BASED             | O(d² + h·f·L)    | O(h·f·L)       | O(L)            |
+| BASED             | O(d² + h·F·P)    | O(h·F·P) state | O(1)            |
+| Sliding window    | O(d² + h·w)      | O(h·w) KV      | O(1)            |
 | Flash Attention   | O(d² + h·L²)     | O(h·L)         | O(L²)           |
 | Standard Attention| O(d² + h·L²)     | O(h·L²)        | O(L²)           |
 

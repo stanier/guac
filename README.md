@@ -56,7 +56,8 @@ Defined in `scripts/training/core/custom_architectures.py`:
 - **`flash_attention`**: Memory-efficient, tiling-based attention
 - **`conv`**: 1D convolution for local pattern recognition
 - **`mamba2`**: Selective state space modeling
-- **`based`**: Linear attention via feature maps
+- **`based`**: BASED linear attention (2nd-order Taylor feature map), fixed-size state
+- **`sliding_window_attention`**: Softmax attention over the last `sliding_window_size` positions
 - **`mlp_only`**: Feed-forward only (no sequence mixing)
 - **`moh_attention`**: Mixture-of-Heads attention
 - **`shared_expert_moe`**: Mixture-of-Experts with shared experts

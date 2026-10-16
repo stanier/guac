@@ -172,9 +172,13 @@ mamba_ngroups: 1           # B/C groups shared across heads
 mamba_chunk_size: 64       # Scan chunk length (speed/memory only)
 
 # BASED configuration
-based_feature_dim: 8       # Feature map size (trade-off: accuracy vs speed)
-based_num_heads: 8         # Number of attention heads
-based_num_key_value_heads: 4 # KV heads (≤ num_heads)
+based_feature_dim: 16      # Query/key size per head before the Taylor feature map
+based_num_heads: 8         # Number of heads (default num_attention_heads)
+based_num_key_value_heads: 4 # KV heads (≤ num_heads; default num_kv_heads)
+based_chunk_size: 64       # Scan chunk length (speed/memory only)
+
+# Sliding-window attention
+sliding_window_size: 64    # Positions each token sees, itself included
 
 # Convolutional configuration
 conv_kernel_size: 3        # 1D convolution kernel
@@ -184,7 +188,7 @@ conv_groups: 1             # Depthwise convolution groups
 tie_word_embeddings: true  # Share the token embedding matrix with lm_head
 ```
 
-All softmax-attention layers (`full_attention`, `flash_attention`, `moh_attention`) are always causal and run through PyTorch's `F.scaled_dot_product_attention`, which uses FlashAttention kernels on supported GPUs and dtypes. The separate `flash-attn` package is not used.
+All softmax-attention layers (`full_attention`, `flash_attention`, `sliding_window_attention`, `moh_attention`) are always causal and run through PyTorch's `F.scaled_dot_product_attention`, which uses FlashAttention kernels on supported GPUs and dtypes. The separate `flash-attn` package is not used.
 
 ## 🎯 Training Best Practices
 

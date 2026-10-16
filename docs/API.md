@@ -30,8 +30,10 @@ class MixedLayerConfig(PretrainedConfig):
         mamba_d_conv: int = 4,
         mamba_expand: float = 2.0,
         based_feature_dim: int = 16,
-        based_num_heads: int = 8,
-        based_num_key_value_heads: int = 4,
+        based_num_heads: Optional[int] = None,            # num_attention_heads
+        based_num_key_value_heads: Optional[int] = None,  # num_kv_heads
+        based_chunk_size: int = 64,
+        sliding_window_size: int = 64,
         conv_kernel_size: int = 3,
         conv_groups: int = 1,
         # Standard parameters
@@ -41,12 +43,13 @@ class MixedLayerConfig(PretrainedConfig):
 ```
 
 **Parameters**:
-- `layer_types` (List[str]): Mixer for each layer. Options: `"full_attention"`, `"flash_attention"` (same mixer), `"conv"`, `"mamba2"`, `"based"`, `"moh_attention"`, `"mlp_only"`, `"shared_expert_moe"`
+- `layer_types` (List[str]): Mixer for each layer. Options: `"full_attention"`, `"flash_attention"` (same mixer), `"sliding_window_attention"`, `"conv"`, `"mamba2"`, `"based"`, `"moh_attention"`, `"mlp_only"`, `"shared_expert_moe"`
 - `ffn_types` (List[str]): FFN for each layer: `"swiglu"`, `"moe"` or `"none"`. Defaults to `"moe"` for `shared_expert_moe` and `"swiglu"` elsewhere
 - `ffn_hidden_sizes` (List[int]): SwiGLU width for each layer. Defaults to 2/3 of `intermediate_size`
 - `mamba_d_state` (int): State space dimension for Mamba-2 layers
 - `mamba_expand` (float): Expansion factor for Mamba-2 internal dimension
-- `based_feature_dim` (int): Feature map dimension for BASED layers
+- `based_feature_dim` (int): Query/key size per head in BASED layers, before the Taylor feature map expands it to 1 + f + f²
+- `sliding_window_size` (int): Positions each token sees in `sliding_window_attention` layers, itself included
 - `conv_kernel_size` (int): Kernel size for convolutional layers
 
 ### MixedLayerForCausalLM
@@ -113,7 +116,8 @@ shape, `[batch, seq_len, hidden_size]`. They are registered in `MIXERS`.
 | `full_attention`, `flash_attention` | `GroupedQueryAttention` (`F.scaled_dot_product_attention`) | `num_attention_heads`, `num_kv_heads` |
 | `conv` | `ConvMixer` (causal Conv1D) | `conv_kernel_size`, `conv_groups` |
 | `mamba2` | `ConfigMamba2Mixer` (`Mamba2Mixer` from `mamba2.py`) | `mamba_d_state`, `mamba_d_conv`, `mamba_expand`, `mamba_headdim`, `mamba_ngroups`, `mamba_chunk_size` |
-| `based` | `BasedMixer` | `based_feature_dim`, `based_num_heads`, `based_num_key_value_heads` |
+| `sliding_window_attention` | `SlidingWindowAttention` (`GroupedQueryAttention` over a local window) | `num_attention_heads`, `num_kv_heads`, `sliding_window_size` |
+| `based` | `BasedMixer` (Taylor-feature linear attention, `linear_attention.py`) | `based_feature_dim`, `based_num_heads`, `based_num_key_value_heads`, `based_chunk_size` |
 | `moh_attention` | `MixtureOfHeadAttention` | `moh_top_k`, `moh_temperature`, `moh_noise_std` |
 | `mlp_only`, `shared_expert_moe` | none | |
 
