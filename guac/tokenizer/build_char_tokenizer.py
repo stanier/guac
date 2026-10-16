@@ -26,7 +26,8 @@ def build_char_tokenizer(output_dir: str) -> PreTrainedTokenizerFast:
 
     vocab = {tok: i for i, tok in enumerate(specials + chars)}
     tok = Tokenizer(models.WordLevel(vocab=vocab, unk_token=core['unk_token']))
-    tok.pre_tokenizer = pre_tokenizers.Split(Regex("."), behavior="isolated")
+    # [\s\S], not ".": "." skips newlines, which would merge "\n\n" into one UNK split
+    tok.pre_tokenizer = pre_tokenizers.Split(Regex(r"[\s\S]"), behavior="isolated")
     tok.decoder = decoders.Fuse()
     # Append EOS so the model learns where an answer ends
     tok.post_processor = processors.TemplateProcessing(

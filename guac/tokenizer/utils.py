@@ -135,6 +135,7 @@ def train_spm(
     user_defined_symbols: List[str],
     character_coverage: float = 0.995,
     byte_fallback: bool = True,
+    hard_vocab_limit: bool = True,
 ) -> str:
     """
     Train a SentencePiece BPE model and return the path to the .model file.
@@ -150,6 +151,8 @@ def train_spm(
                                that pass the same list.
         character_coverage:    Fraction of characters to cover (0.995 works well for English;
                                use 0.9995 for multilingual).
+        hard_vocab_limit:      False lets SentencePiece stop short of vocab_size when the
+                               corpus runs out of merges, instead of failing.
     """
     os.makedirs(os.path.dirname(model_prefix) or '.', exist_ok=True)
 
@@ -166,11 +169,76 @@ def train_spm(
         remove_extra_whitespaces=False,
         max_sentence_length=131768,
         user_defined_symbols=user_defined_symbols,
+        hard_vocab_limit=hard_vocab_limit,
         minloglevel=1,
         pad_id=0, bos_id=1, eos_id=2, unk_id=3,
     )
 
     return f"{model_prefix}.model"
+
+
+# ---------------------------------------------------------------------------
+# Extending a model with new pieces
+# ---------------------------------------------------------------------------
+#
+# SentencePiece can't continue training from an existing vocab: passing the vocab
+# back as user_defined_symbols pre-splits the corpus into fixed symbols, leaving
+# BPE nothing to merge. Instead, later stages train their own model and append its
+# pieces to the earlier one. SentencePiece's BPE encoder merges adjacent pieces by
+# score, so appended pieces (scored below every existing one) act as merges learned
+# after the existing ones, and existing ids never move.
+
+def ranked_pieces(model_path: str) -> List[str]:
+    """A BPE model's learned pieces in merge order (highest score first)."""
+    proto = load_model_proto(model_path)
+    normal = [p for p in proto.pieces if p.type == p.NORMAL]
+    return [p.piece for p in sorted(normal, key=lambda p: -p.score)]
+
+
+def select_reachable(candidates: List[str], vocab: Set[str], limit: int) -> List[str]:
+    """
+    Up to `limit` candidates (in order, skipping ones already in `vocab`) that BPE can
+    actually produce: single characters, or pieces that split into two pieces already
+    in the vocab or selected. A piece whose parts are missing would never be emitted.
+    """
+    vocab = set(vocab)
+    selected: List[str] = []
+    pending = [c for c in dict.fromkeys(candidates) if c not in vocab]
+    progress = True
+    while pending and progress and len(selected) < limit:
+        progress, waiting = False, []
+        for piece in pending:
+            if len(selected) >= limit:
+                break
+            if len(piece) == 1 or any(piece[:i] in vocab and piece[i:] in vocab for i in range(1, len(piece))):
+                selected.append(piece)
+                vocab.add(piece)
+                progress = True
+            else:
+                waiting.append(piece)
+        pending = waiting
+    return selected
+
+
+def extend_model(base_model_path: str, new_pieces: List[str], output_path: str) -> str:
+    """
+    Write a copy of a SentencePiece BPE model with `new_pieces` appended (ids after
+    every existing piece, scores below every existing one, in the given order).
+    Returns output_path.
+    """
+    proto = load_model_proto(base_model_path)
+    existing = {p.piece for p in proto.pieces}
+    score = min((p.score for p in proto.pieces if p.type == p.NORMAL), default=0.0)
+    for piece in new_pieces:
+        if piece in existing:
+            continue
+        score -= 1.0
+        proto.pieces.add(piece=piece, score=score, type=type(proto).SentencePiece.NORMAL)
+        existing.add(piece)
+    proto.trainer_spec.vocab_size = len(proto.pieces)
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    Path(output_path).write_bytes(proto.SerializeToString())
+    return output_path
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +277,20 @@ def prepare_training_text(datasets: Any, output_path: str, max_texts: int = 1000
 
 def wrap_as_hf_tokenizer(model_path: str, core_tokens: Dict[str, str], output_dir: str) -> Any:
     """
-    Wrap a trained SentencePiece .model file as a HuggingFace T5Tokenizer
-    and save it in a format that AutoTokenizer.from_pretrained() can load.
+    Convert a trained SentencePiece BPE .model file into a HuggingFace fast tokenizer
+    and save it where AutoTokenizer.from_pretrained() loads it.
+
+    The result encodes exactly as SentencePiece does (byte fallback, runs of spaces,
+    NFKC), except that text starting with whitespace gets no extra dummy-prefix "▁".
+    Token ids are SentencePiece's. On top of that:
+      - every user-defined symbol (the prompt template tokens) is matched as one
+        token, which SentencePiece itself can't do for symbols containing spaces;
+      - the core tokens are the tokenizer's pad/unk/bos/eos (appended to the vocab
+        if the model lacks them), and EOS is appended to every encoded text.
+
+    transformers' own conversion (T5Tokenizer -> T5TokenizerFast, what AutoTokenizer
+    did with the old T5Tokenizer wrapping) drops byte fallback, collapses spaces and
+    appends SentencePiece's "</s>" instead of the EOS token.
 
     Args:
         model_path:   Path to the .model file from SentencePiece training.
@@ -220,13 +300,51 @@ def wrap_as_hf_tokenizer(model_path: str, core_tokens: Dict[str, str], output_di
     Returns:
         The loaded tokenizer object.
     """
-    from transformers import T5Tokenizer
+    import shutil
+    from tokenizers import AddedToken, Tokenizer, decoders, models, normalizers, pre_tokenizers, processors
+    from transformers import PreTrainedTokenizerFast
+    from transformers.convert_slow_tokenizer import SentencePieceExtractor
+
+    proto = load_model_proto(model_path)
+    if proto.trainer_spec.model_type != proto.trainer_spec.BPE:
+        raise ValueError(f"{model_path} is not a SentencePiece BPE model")
+    sp = spm.SentencePieceProcessor(model_file=str(model_path))
+    vocab, merges = SentencePieceExtractor(str(model_path)).extract()
+
+    tok = Tokenizer(models.BPE(vocab=vocab, merges=merges, unk_token=sp.IdToPiece(sp.unk_id()),
+                               fuse_unk=True, byte_fallback=proto.trainer_spec.byte_fallback))
+    charsmap = proto.normalizer_spec.precompiled_charsmap
+    tok.normalizer = normalizers.Precompiled(charsmap) if charsmap else None
+    tok.pre_tokenizer = pre_tokenizers.Metaspace(
+        replacement="▁", prepend_scheme="first" if proto.normalizer_spec.add_dummy_prefix else "never")
+    tok.decoder = decoders.Sequence([
+        decoders.Replace("▁", " "), decoders.ByteFallback(), decoders.Fuse(),
+        *([decoders.Strip(" ", 1, 0)] if proto.normalizer_spec.add_dummy_prefix else []),
+    ])
+
+    core = set(core_tokens.values())
+    controls = [sp.IdToPiece(i) for i in range(sp.GetPieceSize()) if sp.IsControl(i) or sp.IsUnknown(i)]
+    user_symbols = [p.piece for p in proto.pieces if p.type == p.USER_DEFINED]
+    tok.add_special_tokens([AddedToken(t, normalized=False, special=True)
+                            for t in controls + [t for t in user_symbols if t in core]
+                            + sorted(core - set(user_symbols))])
+    tok.add_tokens([AddedToken(t, normalized=False, special=False) for t in user_symbols if t not in core])
+    eos = core_tokens['eos_token']
+    # List form: the core tokens contain spaces
+    tok.post_processor = processors.TemplateProcessing(
+        single=["$A", eos], pair=["$A", eos, "$B:1", eos], special_tokens=[(eos, tok.token_to_id(eos))])
 
     os.makedirs(output_dir, exist_ok=True)
-    tokenizer = T5Tokenizer(vocab_file=model_path, extra_ids=0)
-    tokenizer.pad_token = core_tokens['pad_token']
-    tokenizer.bos_token = core_tokens['bos_token']
-    tokenizer.eos_token = core_tokens['eos_token']
-    tokenizer.unk_token = core_tokens['unk_token']
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object=tok, **core_tokens)
     tokenizer.save_pretrained(output_dir)
+    if Path(model_path).resolve() != (Path(output_dir) / 'tokenizer.model').resolve():
+        shutil.copy(model_path, Path(output_dir) / 'tokenizer.model')
     return tokenizer
+
+
+def load_model_proto(model_path: str) -> Any:
+    """The SentencePiece ModelProto in a .model file."""
+    from sentencepiece import sentencepiece_model_pb2
+    proto = sentencepiece_model_pb2.ModelProto()
+    proto.ParseFromString(Path(model_path).read_bytes())
+    return proto

@@ -24,16 +24,14 @@ class VocabSpec:
 
     The pipeline has three stages:
         Stage 1 (core):       Train a generalist tokenizer seeded with anchor tokens.
-        Stage 2 (partitions): Train N domain tokenizers seeded with the full core vocab,
-                              extract only the new domain-specific tokens each learns.
-        Stage 3 (final):      Combine core + all partition tokens, train the full-size
-                              tokenizer with the combined set as user_defined_symbols.
+        Stage 2 (partitions): Train N domain tokenizers and keep the pieces each learns
+                              that the core lacks, up to its budget.
+        Stage 3 (final):      Append the partition tokens to the core model, then pieces
+                              learned from the full corpus, up to total_size.
 
     Token ID stability:
-        SentencePiece places user_defined_symbols at the beginning of the ID space
-        (after the 4 reserved special tokens). Passing core + partition tokens as
-        user_defined_symbols in Stage 3 means those tokens get the lowest IDs in the
-        final model — they stay stable if you later extend the vocab.
+        The final model is the core model with pieces appended, so core tokens keep
+        their ids and partition tokens come right after them.
     """
 
     total_size: int               # target vocab size for the final tokenizer
@@ -77,11 +75,13 @@ class VocabSpec:
     def validate(self, anchor_count: int = 0) -> None:
         """Raise ValueError for obviously invalid configurations."""
         special_tokens = 4  # pad, bos, eos, unk
-        min_core = special_tokens + anchor_count + 1
+        byte_tokens = 256 if self.byte_fallback else 0
+        min_core = special_tokens + byte_tokens + anchor_count + 1
         if self.core_size < min_core:
             raise ValueError(
-                f"core_size ({self.core_size}) must be > {min_core} "
-                f"(4 special tokens + {anchor_count} anchors + at least 1 learned token)"
+                f"core_size ({self.core_size}) must be >= {min_core} "
+                f"(4 special tokens + {byte_tokens} byte tokens + {anchor_count} reserved tokens "
+                f"+ at least 1 learned token)"
             )
 
         if self.total_size <= self.core_size:

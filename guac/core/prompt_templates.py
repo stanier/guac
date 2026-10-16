@@ -10,8 +10,11 @@ from jinja2 import Template, Environment, FileSystemLoader
 from typing import Dict, List, Set, Any, Optional
 import os
 
+# Tuples, not sets: their order sets the tokenizer's ids for these tokens, so it
+# must not depend on PYTHONHASHSEED.
+
 # Flag tokens (single tokens for state/mode changes)
-FLAG_TOKEN_NAMES = {
+FLAG_TOKEN_NAMES = (
     "PAD",          # Padding token
     "UNK",          # Unknown token
     "RESET",        # Session reset marker
@@ -23,11 +26,11 @@ FLAG_TOKEN_NAMES = {
     "PING", "ALERT", "PANIC",
 
     # Diagnostic
-    "AFFIRMATIVE", "NEGATIVE"
-}
+    "AFFIRMATIVE", "NEGATIVE",
+)
 
 # Serial tokens (paired start/end tokens for content boundaries)
-SERIAL_TOKEN_NAMES = {
+SERIAL_TOKEN_NAMES = (
     # Guidance property boundaries
     "GUIDE_SYS", "GUIDE_ORG", "GUIDE_USR",
 
@@ -41,7 +44,7 @@ SERIAL_TOKEN_NAMES = {
 
     # Inference markers
     "INFERENCE",
-}
+)
 
 # Template properties (replaced with actual content)
 TEMPLATE_PROPERTIES = {

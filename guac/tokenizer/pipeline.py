@@ -21,7 +21,7 @@ from typing import List
 
 from .vocab_spec import VocabSpec
 from .utils import load_anchor_tokens, deduplicate_partitions, wrap_as_hf_tokenizer
-from .stages import train_core, train_partition, train_final
+from .stages import prompt_special_tokens, train_core, train_partition, train_final
 
 
 class VocabPipeline:
@@ -30,18 +30,19 @@ class VocabPipeline:
 
     Stages
     ------
-    1. Core       Train a generalist tokenizer seeded with predefined anchor tokens.
-    2. Partitions Train N domain tokenizers seeded with the full core vocab; extract
-                  only the new tokens each domain trainer learns.
-    3. Final      Combine core + deduplicated partition tokens, train the full-size
-                  tokenizer with this combined set as user_defined_symbols, then wrap
-                  and save as a HuggingFace-compatible tokenizer.
+    1. Core       Train a generalist tokenizer seeded with the prompt template tokens and
+                  predefined anchor tokens.
+    2. Partitions Train N domain tokenizers; keep the pieces each learns that the core
+                  lacks (up to its budget).
+    3. Final      Append the deduplicated partition tokens to the core model, then
+                  pieces learned from the full corpus up to total_size, and save it as
+                  a HuggingFace fast tokenizer.
 
     Token ID stability
     ------------------
-    Because user_defined_symbols are assigned IDs 4..N (after the four special tokens)
-    in SentencePiece, passing the same combined token list in future extended builds
-    preserves those IDs. New tokens from extended partitions simply append to the end.
+    The final model is the core model with pieces appended, so every core piece keeps
+    its stage-1 id and partition tokens come next. The prompt template tokens are
+    user_defined_symbols of the core, at ids 4 onwards.
     """
 
     def __init__(self, spec: VocabSpec):
@@ -71,7 +72,8 @@ class VocabPipeline:
             anchor_tokens = load_anchor_tokens(self.spec.anchors_path)
             print(f"Loaded {len(anchor_tokens):,} anchor tokens from {self.spec.anchors_path}")
 
-        self.spec.validate(anchor_count=len(anchor_tokens))
+        reserved = list(dict.fromkeys(prompt_special_tokens() + anchor_tokens))
+        self.spec.validate(anchor_count=len(reserved))
 
         # ── Stage 1 ──────────────────────────────────────────────────────────
         print("\n── Stage 1: Core ────────────────────────────────────────────────")
@@ -104,13 +106,9 @@ class VocabPipeline:
             all_partition_tokens = []
             print("\nNo partitions configured, skipping Stage 2.")
 
-        # Combine, preserving order and deduplicating any residual overlap
-        combined = list(dict.fromkeys(core_tokens + all_partition_tokens))
-        print(f"\nCombined seed vocab: {len(combined):,} tokens")
-
         # ── Stage 3 ──────────────────────────────────────────────────────────
         print("\n── Stage 3: Final ───────────────────────────────────────────────")
-        final_model_path = train_final(self.spec, combined, self.output_dir, force=force)
+        final_model_path = train_final(self.spec, all_partition_tokens, self.output_dir, force=force)
 
         # Wrap as HuggingFace tokenizer
         hf_dir = str(self.spec.final_hf_dir)

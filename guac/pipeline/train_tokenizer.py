@@ -18,7 +18,6 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
-from transformers import AutoTokenizer
 from datasets import load_dataset, load_from_disk, concatenate_datasets
 
 from guac.core.dataset_utils import load_pretraining_datasets
@@ -75,72 +74,43 @@ def create_training_text_file(datasets: Any, all_special_tokens: List[str],
 def train_sentencepiece_tokenizer(training_file: str, output_path: str,
                                   vocab_size: int, all_special_tokens: List[str],
                                   core_tokens: Dict[str, str]) -> Any:
-    """Train SentencePiece tokenizer."""
-    import sentencepiece as spm
-    from transformers import T5Tokenizer
+    """Train a SentencePiece BPE tokenizer and save it as a HuggingFace fast tokenizer."""
+    from guac.tokenizer.utils import train_spm, wrap_as_hf_tokenizer
 
     print(f"Training SentencePiece tokenizer (vocab_size={vocab_size})")
-
-    model_prefix = os.path.join(output_path, "tokenizer")
-    os.makedirs(output_path, exist_ok=True)
-
-    spm.SentencePieceTrainer.train(
-        input=training_file,
-        model_prefix=model_prefix,
-        vocab_size=vocab_size,
-        model_type='bpe',
-        character_coverage=0.9995,
-        split_digits=True,
-        byte_fallback=True,
-        normalization_rule_name='nfkc',
-        add_dummy_prefix=True,
-        remove_extra_whitespaces=False,
-        max_sentence_length=32768,
-        user_defined_symbols=all_special_tokens,
-        minloglevel=1,
-        pad_id=0, bos_id=1, eos_id=2, unk_id=3
-    )
-
-    tokenizer = T5Tokenizer(vocab_file=f"{model_prefix}.model", extra_ids=0)
-    tokenizer.pad_token = core_tokens['pad_token']
-    tokenizer.bos_token = core_tokens['bos_token']
-    tokenizer.eos_token = core_tokens['eos_token']
-    tokenizer.unk_token = core_tokens['unk_token']
-
-    tokenizer.save_pretrained(output_path)
+    model_path = train_spm(training_file, os.path.join(output_path, "tokenizer"), vocab_size,
+                           user_defined_symbols=all_special_tokens, character_coverage=0.9995)
+    tokenizer = wrap_as_hf_tokenizer(model_path, core_tokens, output_path)
     print(f"SentencePiece tokenizer saved to {output_path}")
     return tokenizer
 
 
-def train_bpe_tokenizer(training_file: str, output_path: str,
-                       vocab_size: int, core_tokens: Dict[str, str]) -> Any:
-    """Train BPE tokenizer as fallback."""
-    from tokenizers import Tokenizer, models, normalizers, pre_tokenizers, trainers
+def train_bpe_tokenizer(training_file: str, output_path: str, vocab_size: int,
+                        all_special_tokens: List[str], core_tokens: Dict[str, str]) -> Any:
+    """Train a byte-level BPE tokenizer (every string encodes, nothing becomes UNK)."""
+    from tokenizers import AddedToken, Tokenizer, decoders, models, normalizers, pre_tokenizers, processors, trainers
     from transformers import PreTrainedTokenizerFast
 
-    print(f"Training BPE tokenizer (vocab_size={vocab_size})")
+    print(f"Training byte-level BPE tokenizer (vocab_size={vocab_size})")
 
     tokenizer = Tokenizer(models.BPE())
     tokenizer.normalizer = normalizers.NFKC()
-    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tokenizer.decoder = decoders.ByteLevel()
 
-    special_tokens_list = list(core_tokens.values())
-    trainer = trainers.BpeTrainer(vocab_size=vocab_size, special_tokens=special_tokens_list)
-
-    with open(training_file, 'r', encoding='utf-8') as f:
-        training_data = [line.strip() for line in f if line.strip()]
-
-    tokenizer.train_from_iterator(training_data, trainer)
+    # The core tokens first, so they get ids 0-3 (pad, unk, bos, eos)
+    core = [core_tokens[k] for k in ('pad_token', 'unk_token', 'bos_token', 'eos_token')]
+    special = [AddedToken(t, normalized=False, special=True) for t in core]
+    trainer = trainers.BpeTrainer(vocab_size=vocab_size, special_tokens=special,
+                                  initial_alphabet=pre_tokenizers.ByteLevel.alphabet())
+    tokenizer.train([training_file], trainer)
+    tokenizer.add_tokens([AddedToken(t, normalized=False) for t in all_special_tokens if t not in core])
+    eos = core_tokens['eos_token']
+    tokenizer.post_processor = processors.TemplateProcessing(
+        single=["$A", eos], pair=["$A", eos, "$B:1", eos], special_tokens=[(eos, tokenizer.token_to_id(eos))])
 
     os.makedirs(output_path, exist_ok=True)
-    tokenizer.save(os.path.join(output_path, "tokenizer.json"))
-
-    hf_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer)
-    hf_tokenizer.pad_token = core_tokens['pad_token']
-    hf_tokenizer.bos_token = core_tokens['bos_token']
-    hf_tokenizer.eos_token = core_tokens['eos_token']
-    hf_tokenizer.unk_token = core_tokens['unk_token']
-
+    hf_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer, **core_tokens)
     hf_tokenizer.save_pretrained(output_path)
     print(f"BPE tokenizer saved to {output_path}")
     return hf_tokenizer
@@ -161,9 +131,11 @@ def main():
     parser.add_argument('--max-samples', type=int, default=50000,
                        help='Maximum number of text samples to use')
     parser.add_argument('--force-bpe', action='store_true',
-                       help='Force use of BPE tokenizer instead of SentencePiece')
+                       help='Same as --tokenizer-type bpe')
 
     args = parser.parse_args()
+    if args.force_bpe:
+        args.tokenizer_type = 'bpe'
 
     core_tokens, all_special_tokens = get_special_tokens()
 
@@ -181,14 +153,14 @@ def main():
     training_file = create_training_text_file(datasets, all_special_tokens, args.max_samples)
 
     try:
-        if args.force_bpe:
-            tokenizer = train_bpe_tokenizer(training_file, output_path, args.vocab_size, core_tokens)
+        if args.tokenizer_type == 'bpe':
+            tokenizer = train_bpe_tokenizer(training_file, output_path, args.vocab_size,
+                                            all_special_tokens, core_tokens)
         else:
             tokenizer = train_sentencepiece_tokenizer(
                 training_file, output_path, args.vocab_size,
                 all_special_tokens, core_tokens
             )
-
 
         print(f"\nTokenizer training complete!")
         print(f"Vocabulary size: {len(tokenizer):,}")

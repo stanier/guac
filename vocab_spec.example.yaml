@@ -3,12 +3,13 @@
 # Configuration for the hierarchical tokenizer pipeline.
 #
 # Three-stage build:
-#   Stage 1 (core):       Generalist tokenizer seeded with anchor tokens.
-#                         Uses final_training.data for broad coverage.
-#   Stage 2 (partitions): One trainer per domain, each seeded with the full
-#                         core vocab. Only the new tokens each learns are kept.
-#   Stage 3 (final):      Full-size tokenizer seeded with core + all partition
-#                         tokens. Learns the remaining budget from final_training.data.
+#   Stage 1 (core):       Generalist tokenizer seeded with the prompt template
+#                         tokens and anchor tokens. Uses final_training.data.
+#   Stage 2 (partitions): One trainer per domain. The pieces each learns that
+#                         the core lacks are kept, up to its budget.
+#   Stage 3 (final):      The core model with the partition tokens appended, then
+#                         pieces learned from final_training.data up to total_size.
+#                         Core tokens keep their ids.
 #
 # Run:
 #   python -m guac.tokenizer.pipeline --spec vocab_spec.yaml
@@ -39,10 +40,10 @@ vocab_spec:
     path: tokens/predefined_anchors.txt
 
   # Domain partition trainers (Stage 2).
-  # Each partition receives the full core vocab as user_defined_symbols and
-  # may contribute up to 'budget' new tokens to the combined seed vocab.
-  # trainer_data names are passed to load_pretraining_datasets() —
-  # use known names ('wikitext-103', 'openwebtext') or local disk paths.
+  # Each partition trains its own tokenizer and contributes up to 'budget' of
+  # the pieces it learns that the core lacks.
+  # trainer_data names are passed to load_pretraining_datasets() — use known
+  # names ('wikitext-103', 'openwebtext'), saved datasets or data files (.jsonl, ...).
   partitions:
     - name: code
       trainer_data:
