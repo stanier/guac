@@ -1,6 +1,5 @@
 defaults:
   intermediate_layers_fac: 4
-  max_position_embeddings: 65536
   max_sequence_length: 1024  # Default sequence length for tokenization and training
   step_val: 1
   learning_rate: 8e-4
@@ -20,6 +19,17 @@ defaults:
   tokenizer_model_path: scratch/tokenizers/sentencepiece/shared_60k/tokenizer.model
   vocab_size: 60000
 
+# Former preset names, from before tied embeddings and RoPE (dropping the
+# 65,536-position embedding table) shrank these models. They still work.
+preset_aliases:
+  guac-106m: guac-43m
+  guac-106m-1080ti: guac-43m-1080ti
+  guac-106m-arith: guac-13m-arith
+  guac-280m: guac-160m
+  guac-590m: guac-430m
+  guac-1.1b: guac-910m
+  guac-1.9b: guac-1.7b
+
 common_training_kwargs:
   num_train_epochs: 5
   fp16: true
@@ -29,7 +39,7 @@ common_training_kwargs:
   dataloader_drop_last: true
 
 model_training_configs:
-  guac-106m:
+  guac-43m:
     step_val: 1
     hidden_size: 512
     num_hidden_layers: 4
@@ -49,7 +59,7 @@ model_training_configs:
     max_sequence_length: 512  # Shorter sequences for smallest model
 
   # 1080Ti optimized configurations
-  guac-106m-1080ti:
+  guac-43m-1080ti:
     step_val: 10
     hidden_size: 512
     num_hidden_layers: 4
@@ -68,9 +78,10 @@ model_training_configs:
     ]
     max_sequence_length: 256  # Shorter for better memory usage
 
-  # Laptop/CPU arithmetic smoke test: guac-106m with a character-level tokenizer
+  # Laptop/CPU arithmetic smoke test: guac-43m with a 100-token character-level
+  # tokenizer, which leaves 12.5M parameters
   # (build it first: python -m scripts.training.tokenizer.build_char_tokenizer)
-  guac-106m-arith:
+  guac-13m-arith:
     step_val: 1
     hidden_size: 512
     num_hidden_layers: 4
@@ -88,13 +99,10 @@ model_training_configs:
       conv, conv, mamba2, conv,
     ]
     max_sequence_length: 512
-    # Matches max_sequence_length; the 65536 default would put ~33M of the
-    # parameters in position embeddings these short sequences never use
-    max_position_embeddings: 512
     tokenizer_type: character
     tokenizer_model_path: scratch/tokenizers/character/ascii
     vocab_size: 100
-  guac-280m:
+  guac-160m:
     step_val: 1
     hidden_size: 1024
     num_hidden_layers: 8
@@ -112,7 +120,7 @@ model_training_configs:
       conv, conv, mamba2, conv,
       conv, conv, mamba2, conv,
     ]
-  guac-590m:
+  guac-430m:
     step_val: 1
     hidden_size: 1536
     num_hidden_layers: 12
@@ -131,7 +139,7 @@ model_training_configs:
       conv, conv, mamba2, conv,
       conv, conv, mamba2, conv,
     ]
-  guac-1.1b:
+  guac-910m:
     step_val: 1
     hidden_size: 2048
     num_hidden_layers: 16
@@ -151,7 +159,7 @@ model_training_configs:
       conv, conv, mamba2, conv,
       conv, conv, mamba2, conv,
     ]
-  guac-1.9b:
+  guac-1.7b:
     step_val: 1
     hidden_size: 2560
     num_hidden_layers: 20

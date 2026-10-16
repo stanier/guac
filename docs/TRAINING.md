@@ -180,6 +180,11 @@ based_chunk_size: 64       # Scan chunk length (speed/memory only)
 # Sliding-window attention
 sliding_window_size: 64    # Positions each token sees, itself included
 
+# Position encoding
+use_rope: true             # Rotary embeddings in the softmax-attention mixers
+rope_theta: 10000.0
+use_absolute_position_embeddings: false  # Learned table of max_position_embeddings rows
+
 # Convolutional configuration
 conv_kernel_size: 3        # 1D convolution kernel
 conv_groups: 1             # Depthwise convolution groups

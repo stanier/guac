@@ -17,7 +17,7 @@ You can customize the pipeline by setting environment variables when submitting:
 
 ```bash
 # Train a smaller model with custom vocab
-sbatch --export=PRETRAIN_CONFIG=guac-1.1b,VOCAB_SIZE=32000 \
+sbatch --export=PRETRAIN_CONFIG=guac-910m,VOCAB_SIZE=32000 \
     scripts/training/slurm/full_pipeline.sbatch
 
 # Use different tasks and modes
@@ -38,7 +38,7 @@ sbatch --export=DEBUG_MODE=true,ENABLE_PROFILING=true \
 - `MAX_LENGTH`: Maximum sequence length (default: 1024)
 
 #### Pre-training Settings
-- `PRETRAIN_CONFIG`: Model configuration - guac-3b, guac-4.5b, guac-1.1b, guac-590m (default: guac-3b)
+- `PRETRAIN_CONFIG`: Model configuration - guac-3b, guac-4.5b, guac-910m, guac-430m (default: guac-3b)
 - `PRETRAIN_DATASETS`: Training datasets (default: fineweb)
 - `PRETRAIN_STEPS`: Maximum training steps (default: 10000)
 
@@ -162,7 +162,7 @@ scancel <jobid>
 
 ### Quick Test Run (Debug Mode)
 ```bash
-sbatch --export=DEBUG_MODE=true,PRETRAIN_CONFIG=guac-590m,PRETRAIN_STEPS=100 \
+sbatch --export=DEBUG_MODE=true,PRETRAIN_CONFIG=guac-430m,PRETRAIN_STEPS=100 \
     scripts/training/slurm/full_pipeline.sbatch
 ```
 
@@ -196,7 +196,7 @@ sbatch --time=72:00:00 \
 - Reduce batch size in training configs
 - Use gradient accumulation
 - Request more memory: `#SBATCH --mem=128G`
-- Use smaller model config (guac-590m < guac-1.1b < guac-4.5b < guac-3b)
+- Use smaller model config (guac-430m < guac-910m < guac-4.5b < guac-3b)
 
 ### Timeout
 - Increase time limit: `#SBATCH --time=96:00:00`

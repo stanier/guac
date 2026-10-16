@@ -55,7 +55,7 @@ def test_training_arguments_respect_explicit_max_steps(tmp_path):
 
 
 def test_build_model_config_passes_layer_type_settings_through():
-    config = {**load_model_config('guac-106m'), 'mamba_d_state': 32, 'based_feature_dim': 8,
+    config = {**load_model_config('guac-43m'), 'mamba_d_state': 32, 'based_feature_dim': 8,
               'based_chunk_size': 16, 'conv_kernel_size': 5, 'sliding_window_size': 128}
     model_config = build_model_config(config, vocab_size=100)
 

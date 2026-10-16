@@ -158,7 +158,7 @@ def test_param_matching_rejects_a_mixer_larger_than_the_target():
 
 
 def test_preset_can_be_param_matched():
-    config = load_model_config("guac-106m")
+    config = load_model_config("guac-43m")
     model_config = build_model_config({**config, "param_match": "conv"}, vocab_size=100)
 
     counts = block_parameter_counts(model_config)
@@ -167,6 +167,6 @@ def test_preset_can_be_param_matched():
 
 
 def test_preset_rejects_param_match_with_explicit_widths():
-    config = load_model_config("guac-106m")
+    config = load_model_config("guac-43m")
     with pytest.raises(ValueError, match="either param_match or ffn_hidden_sizes"):
         build_model_config({**config, "param_match": True, "ffn_hidden_sizes": [8] * 4}, vocab_size=100)

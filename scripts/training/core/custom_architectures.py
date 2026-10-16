@@ -23,6 +23,9 @@ SUPPORTED_LAYER_TYPES = (
     "flash_attention", "moh_attention", "shared_expert_moe", "sliding_window_attention",
 )
 
+# Layer types whose mixer is softmax attention, and so gets rotary position embeddings when use_rope is set
+ROTARY_LAYER_TYPES = ("full_attention", "flash_attention", "sliding_window_attention", "moh_attention")
+
 # Layer types whose block has only the FFN (shared_expert_moe defaults its FFN to MoE)
 MIXERLESS_LAYER_TYPES = ("mlp_only", "shared_expert_moe")
 
@@ -115,6 +118,40 @@ def sliding_window_attention(query, key, value, window, attention_mask=None, dro
     )
     out = out.reshape(batch, num_blocks, heads, window, -1).transpose(1, 2)
     return out.reshape(batch, heads, num_blocks * window, -1)[:, :, :length]
+
+
+class RotaryEmbedding(nn.Module):
+    """
+    Rotary position embeddings (RoPE; Su et al. 2021, as in LLaMA) for queries and keys.
+
+    Rotates each pair of channels (i, i + head_dim / 2) by position * theta^(-2i / head_dim),
+    so query-key scores depend only on the distance between positions. The
+    frequencies are computed on the fly in float32: there are no parameters or
+    buffers, so checkpoints don't change and casting the model can't round them.
+    """
+
+    def __init__(self, head_dim: int, theta: float = 10000.0):
+        super().__init__()
+        if head_dim % 2:
+            raise ValueError(f"Rotary embeddings need an even head size, got {head_dim}")
+        self.head_dim = head_dim
+        self.theta = theta
+
+    def forward(self, query, key, offset: int = 0):
+        """query and key are (batch, heads, seq, head_dim); their positions are offset, offset + 1, ..."""
+        seq_len = query.size(2)
+        positions = torch.arange(offset, offset + seq_len, device=query.device, dtype=torch.float32)
+        inv_freq = self.theta ** (-torch.arange(0, self.head_dim, 2, device=query.device, dtype=torch.float32)
+                                  / self.head_dim)
+        angles = torch.outer(positions, inv_freq).repeat(1, 2)  # (seq, head_dim)
+        cos, sin = angles.cos(), angles.sin()
+        return apply_rotary(query, cos, sin), apply_rotary(key, cos, sin)
+
+
+def apply_rotary(x, cos, sin):
+    half = x.size(-1) // 2
+    rotated = torch.cat([-x[..., half:], x[..., :half]], dim=-1)
+    return x * cos.to(x.dtype) + rotated * sin.to(x.dtype)
 
 
 class RMSNorm(nn.Module):
@@ -445,6 +482,13 @@ class MixedLayerConfig(PretrainedConfig):
         use_rms_norm=True,  # Default to True for modern architecture
         initializer_range=0.02,
         use_cache=False,
+        # Rotary position embeddings in the softmax-attention mixers (ROTARY_LAYER_TYPES)
+        use_rope=True,
+        rope_theta=10000.0,
+        # A learned table of max_position_embeddings positions added to the token
+        # embeddings. Off by default: attention mixers get RoPE, and conv, Mamba-2
+        # and BASED mixers see order through their causal structure
+        use_absolute_position_embeddings=False,
         layer_types=None,
         # Per-layer FFN: "swiglu", "moe" or "none". None -> MoE for shared_expert_moe, SwiGLU otherwise
         ffn_types=None,
@@ -509,10 +553,10 @@ class MixedLayerConfig(PretrainedConfig):
         self.based_chunk_size = based_chunk_size
         self.sliding_window_size = sliding_window_size
 
-        # Rotary Position Embedding parameters
-        self.use_rope = kwargs.get('use_rope', True)
-        self.rope_theta = kwargs.get('rope_theta', 10000.0)
-        self.rope_scaling = kwargs.get('rope_scaling', None)
+        # Position encoding
+        self.use_rope = use_rope
+        self.rope_theta = float(rope_theta)
+        self.use_absolute_position_embeddings = use_absolute_position_embeddings
 
         # MoH (Mixture-of-Head) parameters
         self.moh_top_k = kwargs.get('moh_top_k', max(1, num_attention_heads // 2))
@@ -561,6 +605,10 @@ class MixedLayerConfig(PretrainedConfig):
                              f"num_hidden_layers ({num_layers})")
         if min(self.ffn_hidden_sizes, default=1) < 1:
             raise ValueError(f"ffn_hidden_sizes must all be positive, got {self.ffn_hidden_sizes}")
+
+        if use_rope and set(self.layer_types) & set(ROTARY_LAYER_TYPES) and (hidden_size // num_attention_heads) % 2:
+            raise ValueError(f"Rotary embeddings need an even head size; hidden_size {hidden_size} / "
+                             f"num_attention_heads {num_attention_heads} is odd. Set use_rope=False or change the sizes")
 
         if "based" in self.layer_types:
             if hidden_size % self.based_num_heads:
@@ -639,6 +687,7 @@ class GroupedQueryAttention(nn.Module):
         self.o_proj = nn.Linear(self.num_attention_heads * self.head_dim, self.hidden_size, bias=False)
 
         self.attention_dropout = config.attention_probs_dropout_prob
+        self.rotary = RotaryEmbedding(self.head_dim, config.rope_theta) if config.use_rope else None
 
     def forward(self, hidden_states, attention_mask=None):
         batch_size, seq_length, _ = hidden_states.shape
@@ -646,6 +695,8 @@ class GroupedQueryAttention(nn.Module):
         query_states = self.q_proj(hidden_states).view(batch_size, seq_length, self.num_attention_heads, self.head_dim).transpose(1, 2)
         key_states = self.k_proj(hidden_states).view(batch_size, seq_length, self.num_kv_heads, self.head_dim).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(batch_size, seq_length, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        if self.rotary is not None:
+            query_states, key_states = self.rotary(query_states, key_states)
 
         attn_output = causal_attention(
             query_states, key_states, value_states, attention_mask,
@@ -786,6 +837,7 @@ class MixtureOfHeadAttention(nn.Module):
         )
 
         self.attention_dropout = config.attention_probs_dropout_prob
+        self.rotary = RotaryEmbedding(self.head_dim, config.rope_theta) if config.use_rope else None
 
     def forward(self, hidden_states, attention_mask=None):
         batch_size, seq_len, _ = hidden_states.shape
@@ -815,6 +867,8 @@ class MixtureOfHeadAttention(nn.Module):
         q = q.view(batch_size, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
         k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        if self.rotary is not None:
+            q, k = self.rotary(q, k)
 
         # Since heads are selected per token, compute attention for all heads
         # (Q head i uses KV head i // num_kv_groups)
@@ -1137,7 +1191,8 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
 
         # Embeddings
         self.token_embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
+        self.position_embeddings = (nn.Embedding(config.max_position_embeddings, config.hidden_size)
+                                    if config.use_absolute_position_embeddings else None)
         self.embedding_dropout = nn.Dropout(config.hidden_dropout_prob)
 
         # Mixed transformer layers
@@ -1228,16 +1283,16 @@ class MixedLayerForCausalLM(PreTrainedModel, GenerationMixin):
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
-        if position_ids is None:
-            position_ids = torch.arange(seq_length, dtype=torch.long, device=input_ids.device)
-            position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
-
         # Get embeddings
         if inputs_embeds is None:
             inputs_embeds = self.token_embeddings(input_ids)
 
-        position_embeds = self.position_embeddings(position_ids)
-        hidden_states = inputs_embeds + position_embeds
+        hidden_states = inputs_embeds
+        if self.position_embeddings is not None:
+            if position_ids is None:
+                position_ids = torch.arange(seq_length, dtype=torch.long, device=inputs_embeds.device)
+                position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
+            hidden_states = hidden_states + self.position_embeddings(position_ids)
         hidden_states = self.embedding_dropout(hidden_states)
 
         # Pass through mixed transformer layers, collecting MoE load-balancing losses

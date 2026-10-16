@@ -243,7 +243,7 @@ class PathManager:
 
         Args:
             stage: Training stage ('pretraining', 'midtraining', 'posttraining')
-            config_name: Model configuration name (guac-3b, guac-1.9b, etc.)
+            config_name: Model configuration name (guac-3b, guac-1.7b, etc.)
             task: Optional task name for mid-training
             mode: Optional mode for post-training
 

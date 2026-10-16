@@ -21,11 +21,16 @@ project_root = Path(__file__).parent.parent.parent.parent
 
 
 def load_model_config(config_name: str) -> Dict[str, Any]:
-    """Load model configuration from YAML."""
+    """Load a model_configs.yaml preset, merged over the defaults. Former preset names still resolve."""
     config_path = project_root / "model_configs.yaml"
 
     with open(config_path, 'r') as f:
         configs = yaml.safe_load(f)
+
+    aliases = configs.get('preset_aliases') or {}
+    if config_name in aliases:
+        print(f"Note: preset '{config_name}' is now called '{aliases[config_name]}' (renamed to match its size)")
+        config_name = aliases[config_name]
 
     if config_name not in configs['model_training_configs']:
         raise ValueError(f"Model config '{config_name}' not found. Available: {list(configs['model_training_configs'].keys())}")

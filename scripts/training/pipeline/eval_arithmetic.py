@@ -9,7 +9,7 @@ format (normal or reversed digits) is read from the model directory's
 arithmetic_format.json, written by midtrain.py.
 
 Usage:
-    python eval_arithmetic.py --model scratch/models/midtraining/guac-106m-arith_arithmetic
+    python eval_arithmetic.py --model scratch/models/midtraining/guac-13m-arith_arithmetic
     python eval_arithmetic.py --model <dir> --num-per-category 200 --show 10
 """
 

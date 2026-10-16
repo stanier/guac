@@ -69,6 +69,21 @@ width is set so its block has the parameters of a block of that type with the
 default width. In code, use `param_matched_ffn_hidden_sizes(config, reference)`;
 `block_parameter_counts(config)` reports each block's size without allocating it.
 
+### Position Encoding
+
+The softmax-attention mixers (`full_attention`, `flash_attention`,
+`sliding_window_attention`, `moh_attention`) apply rotary position embeddings
+(RoPE) to queries and keys, so their scores depend only on relative position.
+Set `use_rope: false` for position-free (NoPE) attention, and `rope_theta`
+(default 10000) for the base frequency. RoPE has no parameters.
+
+Conv, Mamba-2 and BASED mixers see token order through their causal structure,
+so they need no position encoding. A learned absolute position table
+(`use_absolute_position_embeddings: true`, `max_position_embeddings` rows) is
+available but off by default. Until October 2026 it was always on, with
+65,536 rows: 33.5M parameters in the smallest preset that its short sequences
+never used.
+
 ### 1. MLP-Only Layers
 
 **Purpose**: Pure feed-forward computation without attention mechanisms.

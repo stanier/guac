@@ -4,7 +4,7 @@
 .PHONY: help debug train arithmetic eval-arithmetic clean cache test install pipeline pretrain midtrain posttrain \
 	status clean-models clean-cache progressive multitask benchmark expert examples \
 	pretrain-debug midtrain-debug posttrain-debug pipeline-debug pipeline-profiling \
-	pipeline-code pipeline-reasoning pipeline-guac-3b pipeline-guac-1.9b pipeline-guac-1.1b pipeline-guac-590m \
+	pipeline-code pipeline-reasoning pipeline-guac-3b pipeline-guac-1.7b pipeline-guac-910m pipeline-guac-430m \
 	configs arch download-datasets download-datasets-from download-pretraining-datasets \
 	download-instruction-datasets download-from-site-config download-help train-tokenizer \
 	tokenize-datasets
@@ -26,7 +26,7 @@ help:
 	@echo ""
 	@echo "=== Legacy Commands ==="
 	@echo "  make debug      - Quick debug training with guac-3b model (fastest)"
-	@echo "  make stable     - Stable training with guac-1.1b model (recommended)"
+	@echo "  make stable     - Stable training with guac-430m model (recommended)"
 	@echo "  make train      - Standard training with mixed architecture"
 	@echo "  make arithmetic - Train arithmetic-specific model (now mid-training task)"
 	@echo "  make eval-arithmetic - Exact-match arithmetic accuracy (MODEL=dir, default: mid-trained model)"
@@ -44,7 +44,7 @@ help:
 	@echo "  VOCAB_SIZE=60000 - Vocabulary size for tokenizer training"
 	@echo "  TOKENIZER_PATH=  - Path to tokenizer for dataset tokenization"
 	@echo "  MAX_LENGTH=1024  - Maximum sequence length for tokenization"
-	@echo "  CONFIG=guac-3b      - Model config (guac-3b, guac-1.9b, guac-1.1b, guac-590m, guac-280m, etc.)"
+	@echo "  CONFIG=guac-3b      - Model config (guac-3b, guac-1.7b, guac-910m, guac-430m, guac-160m, etc.)"
 	@echo "  TASK=arithmetic  - Mid-training task (arithmetic, code, reasoning, custom)"
 	@echo "  MODE=instruction - Post-training mode (instruction, sft)"
 	@echo "  DATASETS=fineweb - Datasets for training"
@@ -216,14 +216,14 @@ pipeline-reasoning:
 pipeline-guac-3b:
 	$(MAKE) pipeline CONFIG=guac-3b
 
-pipeline-guac-1.9b:
-	$(MAKE) pipeline CONFIG=guac-1.9b
+pipeline-guac-1.7b:
+	$(MAKE) pipeline CONFIG=guac-1.7b
 
-pipeline-guac-1.1b:
-	$(MAKE) pipeline CONFIG=guac-1.1b
+pipeline-guac-910m:
+	$(MAKE) pipeline CONFIG=guac-910m
 
-pipeline-guac-590m:
-	$(MAKE) pipeline CONFIG=guac-590m
+pipeline-guac-430m:
+	$(MAKE) pipeline CONFIG=guac-430m
 
 # ============================================================================
 # LEGACY COMMANDS (Updated to use new scripts)
@@ -241,8 +241,8 @@ train:
 
 # Stable training with conservative settings (now uses new pipeline)
 stable:
-	@echo "📊 Stable training - using guac-590m model"
-	$(MAKE) pretrain CONFIG=guac-590m DATASETS=$(DATASETS)
+	@echo "📊 Stable training - using guac-430m model"
+	$(MAKE) pretrain CONFIG=guac-430m DATASETS=$(DATASETS)
 
 # Arithmetic-specific training (now mid-training task)
 arithmetic:
@@ -336,12 +336,12 @@ cache:
 # ADVANCED PIPELINE COMMANDS
 # ============================================================================
 
-# Progressive training: guac-3b → guac-1.9b → guac-1.1b
+# Progressive training: guac-3b → guac-1.7b → guac-910m
 progressive:
 	@echo "📈 Progressive training pipeline..."
 	$(MAKE) pipeline CONFIG=guac-3b
-	$(MAKE) pipeline CONFIG=guac-1.9b
-	$(MAKE) pipeline CONFIG=guac-1.1b
+	$(MAKE) pipeline CONFIG=guac-1.7b
+	$(MAKE) pipeline CONFIG=guac-910m
 	@echo "✅ Progressive training complete!"
 
 # Multi-task training: Train all tasks
@@ -357,8 +357,8 @@ multitask:
 benchmark:
 	@echo "🏆 Benchmark training..."
 	$(MAKE) pipeline CONFIG=guac-3b TASK=arithmetic
-	$(MAKE) pipeline CONFIG=guac-1.1b TASK=code
-	$(MAKE) pipeline CONFIG=guac-590m TASK=reasoning
+	$(MAKE) pipeline CONFIG=guac-910m TASK=code
+	$(MAKE) pipeline CONFIG=guac-430m TASK=reasoning
 	@echo "✅ Benchmark training complete!"
 
 # Expert training: Large model with all stages
@@ -394,14 +394,14 @@ examples:
 	@echo ""
 	@echo "📊 Standard Training:"
 	@echo "  make pipeline                # Default: guac-3b + arithmetic + instruction"
-	@echo "  make pipeline CONFIG=guac-1.1b   # Femto model pipeline"
+	@echo "  make pipeline CONFIG=guac-910m   # Femto model pipeline"
 	@echo "  make pipeline TASK=code      # Code specialization"
 	@echo "  make pipeline FORCE_RETOKENIZE=true  # Force re-tokenization"
 	@echo ""
 	@echo "🎯 Advanced Pipelines:"
-	@echo "  make pipeline CONFIG=guac-590m TASK=reasoning MODE=sft"
-	@echo "  make multitask CONFIG=guac-1.1b  # Train all tasks"
-	@echo "  make progressive             # Train guac-3b→guac-1.9b→guac-1.1b"
+	@echo "  make pipeline CONFIG=guac-430m TASK=reasoning MODE=sft"
+	@echo "  make multitask CONFIG=guac-910m  # Train all tasks"
+	@echo "  make progressive             # Train guac-3b→guac-1.7b→guac-910m"
 	@echo ""
 	@echo "🛠️  Utilities:"
 	@echo "  make test                    # Test installation"

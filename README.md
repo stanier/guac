@@ -23,7 +23,7 @@ Then edit `site_config.yml` with your paths and dataset preferences — this fil
 ```bash
 # Recommended: three-stage pipeline (pre-training -> mid-training -> post-training)
 make pipeline                 # Full pipeline, default guac-3b config
-make pipeline CONFIG=guac-590m     # With a specific model size
+make pipeline CONFIG=guac-430m     # With a specific model size
 make pipeline TASK=arithmetic # With a mid-training task specialization
 make pipeline DEBUG=true      # Smaller datasets for a fast debug run
 
@@ -35,7 +35,7 @@ make posttrain
 # Quick smoke test: cap pre-training at a handful of steps.
 # Training length comes from the config (max_steps if set, else num_train_epochs);
 # DEBUG=true also shrinks the dataset and caps training at 20 steps; MAX_STEPS overrides both.
-make pretrain CONFIG=guac-106m DEBUG=true MAX_STEPS=5
+make pretrain CONFIG=guac-43m DEBUG=true MAX_STEPS=5
 
 # Batch size, grad accumulation and sequence length come from the config as given
 # (pretrain.py prints the values it uses); override them per run with PRETRAIN_ARGS
@@ -43,7 +43,7 @@ make pretrain PRETRAIN_ARGS="--batch-size 8 --grad-accum 4 --max-length 512"
 
 # Legacy shortcuts (still wired to the pipeline scripts)
 make debug   # guac-3b config, debug mode
-make stable  # guac-590m config
+make stable  # guac-430m config
 ```
 
 ## Architecture Overview
@@ -73,7 +73,7 @@ Defined in `scripts/training/core/custom_architectures.py`:
 - Custom tokens for multi-sequence boundaries and inference control
 
 ### 3. **Flexible Configuration**
-- Scalable model size progression: `guac-106m` (512 hidden, 4 layers) up through `guac-48b` (8192 hidden, 64 layers) — see the full table below
+- Scalable model size progression: `guac-43m` (512 hidden, 4 layers) up through `guac-48b` (8192 hidden, 64 layers) — see the full table below
 - Environment-agnostic `site_config.yml`, resolved via `PathManager`
 
 ### 4. **Advanced Training Features**
@@ -103,26 +103,26 @@ Guac is built to explore:
 
 Guac provides pre-configured model sizes in `model_configs.yaml` (all use the `mixed_layer` architecture unless noted):
 
-| Config        | Hidden Size | Layers | Attention Heads  |
-|---------------|-------------|--------|------------------|
-| `guac-106m`   | 512         | 4      | 4                |
-| `guac-280m`   | 1024        | 8      | 8                |
-| `guac-590m`   | 1536        | 12     | 12               |
-| `guac-1.1b`   | 2048        | 16     | 16               |
-| `guac-1.9b`   | 2560        | 20     | 20               |
-| `guac-3b`     | 3072        | 24     | 24               |
-| `guac-4.5b`   | 3584        | 28     | 28               |
-| `guac-6.5b`   | 4096        | 32     | 32               |
-| `guac-9b`     | 4608        | 36     | 36               |
-| `guac-12b`    | 5120        | 40     | 40               |
-| `guac-16b`    | 5632        | 44     | 44               |
-| `guac-21b`    | 6144        | 48     | 48               |
-| `guac-26b`    | 6656        | 52     | 52               |
-| `guac-32b`    | 7168        | 56     | 56               |
-| `guac-39b`    | 7680        | 60     | 60               |
-| `guac-48b`    | 8192        | 64     | 64               |
+| Config        | Parameters | Hidden Size | Layers | Attention Heads  |
+|---------------|------------|-------------|--------|------------------|
+| `guac-43m`    | 43M        | 512         | 4      | 4                |
+| `guac-160m`   | 161M       | 1024        | 8      | 8                |
+| `guac-430m`   | 426M       | 1536        | 12     | 12               |
+| `guac-910m`   | 914M       | 2048        | 16     | 16               |
+| `guac-1.7b`   | 1.70B      | 2560        | 20     | 20               |
+| `guac-3b`     | 2.85B      | 3072        | 24     | 24               |
+| `guac-4.5b`   | 4.45B      | 3584        | 28     | 28               |
+| `guac-6.5b`   | 6.57B      | 4096        | 32     | 32               |
+| `guac-9b`     | 9.28B      | 4608        | 36     | 36               |
+| `guac-12b`    | 12.65B     | 5120        | 40     | 40               |
+| `guac-16b`    | 16.76B     | 5632        | 44     | 44               |
+| `guac-21b`    | 21.69B     | 6144        | 48     | 48               |
+| `guac-26b`    | 27.51B     | 6656        | 52     | 52               |
+| `guac-32b`    | 34.29B     | 7168        | 56     | 56               |
+| `guac-39b`    | 42.10B     | 7680        | 60     | 60               |
+| `guac-48b`    | 51.03B     | 8192        | 64     | 64               |
 
-There's also a `guac-106m-1080ti` variant of `guac-106m` tuned for smaller GPUs. `guac-3b` is the default development config referenced throughout `CLAUDE.md` and the `Makefile`.
+Parameter counts are with the default 60k vocabulary and tied embeddings. Presets smaller than `guac-3b` were renamed in October 2026 to match their real sizes (`guac-106m` is now `guac-43m`, and so on); the old names still work. There's also a `guac-43m-1080ti` variant of `guac-43m` tuned for smaller GPUs. `guac-3b` is the default development config referenced throughout `CLAUDE.md` and the `Makefile`.
 
 ## Workflows
 

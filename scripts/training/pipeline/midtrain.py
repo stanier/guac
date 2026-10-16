@@ -10,7 +10,7 @@ Usage:
     python midtrain.py --base-model ./models/pretrain_atto --task custom --datasets /path/to/data
 
     # Long arithmetic run: fresh data, reversed answers, best checkpoint by held-out accuracy
-    python midtrain.py --base-model ./scratch/models/pretraining/guac-106m-arith --task arithmetic \\
+    python midtrain.py --base-model ./scratch/models/pretraining/guac-13m-arith --task arithmetic \\
         --num-arithmetic-samples 1000000 --epochs 1 --learning-rate 1e-3 --weight-decay 0.1 \\
         --warmup-ratio 0.02 --reverse-answers --eval-steps 2000 --early-stopping-patience 0
 """

@@ -6,8 +6,8 @@ Handles pre-training on large-scale language data.
 
 Usage:
     python pretrain.py --model-config guac-3b --datasets wikitext-103
-    python pretrain.py --model-config guac-1.1b --datasets wikitext-103,openwebtext
-    python pretrain.py --model-config guac-590m --resume-from-checkpoint /path/to/checkpoint
+    python pretrain.py --model-config guac-910m --datasets wikitext-103,openwebtext
+    python pretrain.py --model-config guac-430m --resume-from-checkpoint /path/to/checkpoint
 """
 
 import os, sys, yaml, argparse, torch
@@ -262,7 +262,7 @@ class MemoryUsageCallback(TrainerCallback):
 
             max_length = 512
             if self.config:
-                max_length = self.config.get('max_position_embeddings', 512)
+                max_length = self.config.get('max_sequence_length', 512)
             elif hasattr(args, 'max_length'):
                 max_length = args.max_length
 
@@ -379,9 +379,10 @@ def pretraining_cache_key(dataset_names: List[str], tokenizer: Any, max_length: 
     return f"{readable}_{content_hash(settings)}"
 
 
-# Preset keys passed straight through to MixedLayerConfig (per-layer-type settings)
-LAYER_SETTING_PREFIXES = (
+# Preset keys passed straight through to MixedLayerConfig (per-layer-type and position-encoding settings)
+MODEL_SETTING_PREFIXES = (
     'num_experts', 'num_shared_experts', 'moe_', 'moh_', 'mamba_', 'based_', 'conv_', 'sliding_window_',
+    'use_rope', 'rope_', 'use_absolute_position_embeddings',
 )
 
 
@@ -406,7 +407,7 @@ def build_model_config(config: Dict[str, Any], vocab_size: int) -> MixedLayerCon
         tie_word_embeddings=config.get('tie_word_embeddings', True),
         ffn_types=config.get('ffn_types'),
         ffn_hidden_sizes=config.get('ffn_hidden_sizes'),
-        **{k: v for k, v in config.items() if k.startswith(LAYER_SETTING_PREFIXES)}
+        **{k: v for k, v in config.items() if k.startswith(MODEL_SETTING_PREFIXES)}
     )
     param_match = config.get('param_match')
     if param_match:

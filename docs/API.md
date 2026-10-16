@@ -34,6 +34,11 @@ class MixedLayerConfig(PretrainedConfig):
         based_num_key_value_heads: Optional[int] = None,  # num_kv_heads
         based_chunk_size: int = 64,
         sliding_window_size: int = 64,
+        # Position encoding
+        use_rope: bool = True,
+        rope_theta: float = 10000.0,
+        use_absolute_position_embeddings: bool = False,
+        max_position_embeddings: int = 4096,   # rows of the absolute table, if used
         conv_kernel_size: int = 3,
         conv_groups: int = 1,
         # Standard parameters
@@ -50,6 +55,9 @@ class MixedLayerConfig(PretrainedConfig):
 - `mamba_expand` (float): Expansion factor for Mamba-2 internal dimension
 - `based_feature_dim` (int): Query/key size per head in BASED layers, before the Taylor feature map expands it to 1 + f + f²
 - `sliding_window_size` (int): Positions each token sees in `sliding_window_attention` layers, itself included
+- `use_rope` (bool): Rotary position embeddings in the softmax-attention mixers (`ROTARY_LAYER_TYPES`). Needs an even head size
+- `rope_theta` (float): RoPE base frequency
+- `use_absolute_position_embeddings` (bool): Add a learned table of `max_position_embeddings` positions to the token embeddings (off by default)
 - `conv_kernel_size` (int): Kernel size for convolutional layers
 
 ### MixedLayerForCausalLM

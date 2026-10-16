@@ -12,10 +12,10 @@ Foundation training on large-scale language data.
 python guac_pretrain.py --model-config guac-3b --dataset wikitext-103
 
 # Multi-dataset pre-training
-python guac_pretrain.py --model-config guac-1.1b --datasets wikitext-103,openwebtext
+python guac_pretrain.py --model-config guac-910m --datasets wikitext-103,openwebtext
 
 # Continue from checkpoint
-python guac_pretrain.py --model-config guac-590m --resume-from-checkpoint /path/to/checkpoint
+python guac_pretrain.py --model-config guac-430m --resume-from-checkpoint /path/to/checkpoint
 ```
 
 **Purpose**: Teach general language understanding, grammar, world knowledge
@@ -68,11 +68,11 @@ python guac_posttrain.py --base-model ./models/midtrain_code --mode instruction 
 | Config | Parameters | Use Case |
 |--------|------------|----------|
 | `guac-3b` | 1M | IoT devices, edge computing |
-| `guac-1.9b` | 3M | Mobile phones, embedded |
-| `guac-1.1b` | 14M | Laptops, local inference |
-| `guac-590m` | 35M | Desktop applications |
-| `guac-280m` | 75M | Single GPU training |
-| `guac-106m` | 120M | Professional workstations |
+| `guac-1.7b` | 3M | Mobile phones, embedded |
+| `guac-910m` | 14M | Laptops, local inference |
+| `guac-430m` | 35M | Desktop applications |
+| `guac-160m` | 75M | Single GPU training |
+| `guac-43m` | 120M | Professional workstations |
 | `guac-4.5b` | 250M | Multi-GPU setups |
 | `guac-6.5b` | 500M | Small clusters |
 | `centi` | 1.5B | GPT-2 scale |
@@ -110,7 +110,7 @@ python guac_posttrain.py --base-model ./models/midtrain_arithmetic_pretrain_nano
 ### Custom Training Pipeline
 ```bash
 # Full pipeline with profiling
-python guac_pretrain.py --model-config guac-1.1b --datasets wikitext-103 --enable-profiling
+python guac_pretrain.py --model-config guac-910m --datasets wikitext-103 --enable-profiling
 python guac_midtrain.py --base-model ./models/pretrain_femto --task code --enable-profiling
 python guac_posttrain.py --base-model ./models/midtrain_code_pretrain_femto --mode sft --datasets alpaca --enable-profiling
 ```
@@ -118,7 +118,7 @@ python guac_posttrain.py --base-model ./models/midtrain_code_pretrain_femto --mo
 ### Multi-Stage Training
 ```bash
 # Pre-train -> Math specialization -> Instruction tuning
-python guac_pretrain.py --model-config guac-590m --datasets wikitext-103,openwebtext
+python guac_pretrain.py --model-config guac-430m --datasets wikitext-103,openwebtext
 python guac_midtrain.py --base-model ./models/pretrain_atto --task arithmetic --num-arithmetic-samples 100000
 python guac_posttrain.py --base-model ./models/midtrain_arithmetic_pretrain_atto --mode instruction --datasets alpaca,dolly
 ```
