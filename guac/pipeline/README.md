@@ -24,8 +24,8 @@ python guac/pipeline/posttrain.py --base-model ... --mode sft --datasets chats.j
 
 | Script | Key options |
 |--------|-------------|
-| `pretrain.py` | `--model-config`, `--datasets`, `--max-steps`, `--batch-size`, `--grad-accum`, `--max-length`, `--validation-docs` (0 disables evaluation), `--pack/--no-pack`, `--reset-at-document-boundaries`, `--eval-steps`, `--save-steps`, `--seed`, `--report-to`, `--debug`, `--print-params`, `--print-mem` |
-| `midtrain.py` | `--base-model`, `--task {arithmetic,code,reasoning,custom}`, `--datasets`, schedule flags (`--epochs`, `--max-steps`, `--learning-rate`, ...), arithmetic: `--reverse-answers`, `--answer-only-loss`, `--accuracy-eval-per-category` |
+| `pretrain.py` | `--model-config`, `--tokenizer`, `--datasets`, `--max-steps`, `--batch-size`, `--grad-accum`, `--max-length`, `--validation-docs` (0 disables evaluation), `--pack/--no-pack`, `--reset-at-document-boundaries`, `--eval-steps`, `--save-steps`, `--seed`, `--report-to`, `--debug`, `--print-params`, `--print-mem` |
+| `midtrain.py` | `--base-model` (a model or `checkpoint-N` directory), `--task {arithmetic,code,reasoning,custom}`, `--datasets`, schedule flags (`--epochs`, `--max-steps`, `--learning-rate`, `--eval-steps`, `--early-stopping-patience`, ...), arithmetic: `--reverse-answers`, `--answer-only-loss`, `--accuracy-eval-per-category` |
 | `posttrain.py` | `--base-model`, `--mode {instruction,sft}`, `--datasets` (alpaca, dolly, ultrachat, `.json`/`.jsonl`, a saved dataset, or `synthetic` for smoke tests), `--train-on-prompts`, schedule flags |
 
 Pre-training holds out a validation set and reports perplexity; preset keys
@@ -43,8 +43,10 @@ python guac/pipeline/sweep.py sweeps/recall_small.yaml                         #
 ## Tokenizers and data
 
 ```bash
-python guac/pipeline/train_tokenizer.py --vocab-size 60000 --datasets wikitext-103
+python guac/pipeline/train_tokenizer.py --vocab-size 60000 --datasets wikitext-103   # --tokenizer-type bpe for byte-level BPE
 python -m guac.tokenizer.build_char_tokenizer                 # offline, for guac-13m-arith
-python guac/pipeline/tokenize_datasets.py --tokenizer scratch/tokenizers/sentencepiece/shared_60k \
-    --datasets wikitext-103 --max-length 1024                 # fills pretrain.py's cache ahead of time
+python -m guac.tokenizer.pipeline --spec vocab_spec.yaml      # hierarchical vocab (core, domain partitions, final)
+python -m guac.tokenizer.convert scratch/tokenizers/sentencepiece/shared_60k   # fix one saved by an older version
+python guac/pipeline/tokenize_datasets.py --model-config guac-3b \
+    --datasets wikitext-103                                   # fills pretrain.py's cache ahead of time
 ```

@@ -23,6 +23,10 @@ The dataset download system uses the `hf_partial_download.py` script with CSV co
 
 3. **Downloaded files** will be in `scratch/datasets/downloaded/`
 
+4. **Use them** by path: `pretrain.py --datasets scratch/datasets/downloaded/<name>`
+   (a `.jsonl`/`.json`/`.parquet`/`.csv`/`.txt` file, or a directory of them,
+   with a `text` column), and the same in tokenizer training and vocab specs.
+
 ## CSV Configuration Format
 
 The CSV format is: `repo,size,split,config,format`

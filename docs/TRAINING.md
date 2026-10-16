@@ -128,7 +128,7 @@ see `docs/DATASET_DOWNLOAD.md` (`make download-datasets` reads
   dataset). Set `validation_docs: 0` (or `--validation-docs 0`) to skip evaluation.
 - **Packing** (`pack_sequences`, default on; `--no-pack` to turn off): documents
   are joined with EOS between them and cut into blocks of exactly
-  `max_sequence_length` tokens, so nothing beyond `max_sequence_length` is thrown
+  `max_sequence_length` tokens, so only the final partial block is thrown
   away and no batch holds padding. Documents run across block boundaries, and
   by default layers aren't reset at EOS (as in GPT-style pre-training);
   `--reset-at-document-boundaries` (or `reset_at_document_boundaries: true` in
@@ -137,7 +137,12 @@ see `docs/DATASET_DOWNLOAD.md` (`make download-datasets` reads
   document is truncated to `max_sequence_length` and the rest discarded.
 - Tokenized splits are cached under keys that cover the tokenizer, dataset
   settings, sequence length, packing and hold-out size.
-  `make tokenize-datasets` fills the same cache ahead of time.
+  `make tokenize-datasets CONFIG=<preset>` fills the same cache ahead of time
+  (pass `make pretrain` the same `TOKENIZER_PATH` / `MAX_LENGTH`, if any).
+- Datasets are site-config names, built-in names (`wikitext-103`,
+  `openwebtext`), datasets saved with `save_to_disk`, or data files
+  (`.jsonl`, `.json`, `.parquet`, `.csv`, `.txt`, or a directory of them, such
+  as `hf_partial_download.py` writes). Streaming and on-disk datasets mix.
 
 ### What every run writes
 
@@ -149,7 +154,12 @@ see `docs/DATASET_DOWNLOAD.md` (`make download-datasets` reads
 
 Set `report_to: wandb` (or `--report-to wandb`) to also send metrics to
 Weights & Biases. `seed` (default 42; `--seed`) seeds model initialization as
-well as data order. Checkpoints are written every `save_steps` (default 1000).
+well as data order. Checkpoints are written every `save_steps` (default 1000)
+and include the tokenizer, so a later stage can start from one. Mid- and
+post-training checkpoint at every evaluation by default, since the best model
+(`load_best_model_at_end`) is chosen among checkpoints. Mid-training stops
+early after `--early-stopping-patience` evaluations (default 2) in which neither
+eval loss nor held-out accuracy improved.
 
 ## 🧪 Synthetic Diagnostics and Sweeps
 
@@ -211,7 +221,15 @@ accuracy (`make eval-arithmetic`), and the diagnostics isolate single abilities.
 `torchrun --nproc_per_node=4 guac/pipeline/pretrain.py --model-config ...`
 runs data-parallel training. `docs/SLURM.md` covers cluster jobs.
 
-**Resuming.** Pass `--resume-from-checkpoint scratch/models/pretraining/<config>/checkpoint-N`.
+**Resuming.** Pass `--resume-from-checkpoint scratch/models/pretraining/<config>/checkpoint-N`
+(any stage).
+
+**Tokenizers trained before October 2026.** SentencePiece tokenizers used to be
+saved as `T5Tokenizer`, which `AutoTokenizer` loads as a `T5TokenizerFast` that
+turns newlines and unseen characters into `<unk>` and ends text with `</s>`
+instead of the EOS token. The stages refuse them;
+`python -m guac.tokenizer.convert <dir>` rewrites one in place (ids are
+unchanged). Caches and models made with the broken one are worth redoing.
 
 **Reproducing a run.** `run_info.json` in the output directory has the
 resolved config, command line, seed and git commit.

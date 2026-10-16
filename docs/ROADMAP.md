@@ -9,8 +9,10 @@ probe script or on real checkpoints, not just read off the code.
 infrastructure) and Phase 3 (cleanup), plus the known issues it listed, and
 the open items that could be done without a GPU or network access (Mamba-2's
 linear inter-chunk scan, per-document resets for packed sequences, GPU-scale
-sweep specs). What is left is in [Open Items](#open-items): running things on
-a cluster, and decisions for the user.
+sweep specs), and the fixes from a second audit of everything the first review
+didn't reach (tokenizers, the stage plumbing, the Makefile and jobscripts,
+routing, initialization). What is left is in [Open Items](#open-items):
+running things on a cluster, and decisions for the user.
 
 ## Where Things Stand
 
@@ -27,7 +29,7 @@ None of these branches is merged into `main`. Each item landed as its own commit
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu   # CPU is enough for tests
 pip install -e ".[test]"
-python -m pytest                                                     # ~290 tests, ~10 s, no network
+python -m pytest                                                     # ~390 tests, ~15 s, no network
 ```
 
 - `site_config.yml` is git-ignored. Without it, the path manager falls back to
@@ -181,6 +183,51 @@ pytest with CPU CI.
   gradients). Off by default. Models now take pad/BOS/EOS ids from the
   tokenizer (configs all said EOS 2; the character tokenizer's is 3).
 
+### Second audit (October 2026)
+
+Three parallel audits of the code the review hadn't covered; every finding was
+reproduced on CPU before it was fixed, and each fix has its test.
+
+- **Tokenizers (`fb0fe51`):** the 60k SentencePiece tokenizer was saved as
+  `T5Tokenizer`, which `AutoTokenizer` loads as a `T5TokenizerFast` that turns
+  every newline and unseen character into `<unk>`, collapses runs of spaces and
+  appends `</s>` (id 2) instead of the EOS token, so packed documents ended
+  `</s> <EOS>` and mid-training taught the wrong end token. It is now saved as a
+  fast tokenizer built from the model, which encodes exactly as SentencePiece
+  does, with the same ids (`python -m guac.tokenizer.convert DIR` fixes an old
+  one; the stages refuse unconverted ones). Special-token ids no longer depend
+  on `PYTHONHASHSEED`. The vocab pipeline's stages 2 and 3 couldn't learn
+  anything (the core vocab passed back as `user_defined_symbols` leaves BPE
+  nothing to merge); they now append pieces to the core model. `--tokenizer-type
+  bpe` was ignored and the BPE path dropped characters; it is byte-level BPE.
+  The character tokenizer turned `"\n\n"` into `<unk>`.
+- **Stages (`4796a09`, `20b59a5`):** `--resume-from-checkpoint` crashed in
+  every stage (torch >= 2.6 vs transformers 4.46's RNG-state load).
+  Checkpoints lacked the tokenizer, so a stage couldn't start from
+  `checkpoint-N`. Mid-training early-stopped at 0% held-out accuracy while eval
+  loss fell, and both mid- and post-training could only pick the best model at
+  every other evaluation. posttrain crashed on `--eval-steps` alone. Packing
+  dropped a partial block per 1000-document map batch. `.jsonl` downloads
+  weren't loadable and streaming plus on-disk datasets couldn't be mixed.
+  `pretrain.py --vocab-size` did nothing (now `--tokenizer`), and `--max-length`
+  missed `flop_match`. `metrics.jsonl` repeated steps after a resume.
+- **Makefile and jobscripts (`61ba460`):** `full_pipeline.sbatch` trained and
+  pre-tokenized with a tokenizer pretrain never loaded (`VOCAB_SIZE`, or
+  guac-13m-arith), and hard-coded `scratch/` paths; `make tokenize-datasets`
+  wrote a cache `make pretrain` never read (length 1024 vs the preset's).
+  `make cache`, `make configs` and the site-config download targets were broken.
+- **Model and diagnostics (`0344c2a`..`d8ab676`, `b28bf09`):** with top-1 routing
+  the renormalized gate is always 1, so MoE routers learned only from the
+  balancing loss and mixture-of-heads routers (top-1 by default for 2-3 heads)
+  not at all. Mamba-2's depthwise conv started 10-37x too small (Kaiming fan-out
+  ignores groups). Weight decay hit norm gains and Mamba-2's `A_log`, `D` and
+  `dt_bias`, in the diagnostics and in the stages' Trainer. Seed 0's training
+  batch at step 10,000 was the diagnostics' held-out set. A plain eval-mode
+  forward ignored `reset_at_document_boundaries`. Passing a cache to
+  `generate()` crashed. Sweeps keyed results by task name, which ignored lm
+  `seq_len` and `steps`, so two lm tasks shared data and table columns, and
+  edited specs reused stale rows; rows now carry a hash of their settings.
+
 ## First Sweep Results
 
 `sweeps/recall_small.yaml` (2 layers, hidden 64, every block parameter-matched
@@ -233,6 +280,24 @@ What the table shows, at this small budget:
   is the offline post-training smoke set.
 - **Paths:** scripts moved from `scripts/training/` to `guac/`
   (`python guac/pipeline/pretrain.py`); imports are `from guac.core...`.
+- **SentencePiece tokenizers from before the second audit are refused**
+  until converted (`python -m guac.tokenizer.convert DIR`, ids unchanged).
+  Caches and models built through the broken loading are worth redoing; the
+  cache keys change with the tokenizer, so caches redo themselves. Special-token
+  ids of newly trained tokenizers differ from older ones (fixed order now).
+- **Training changed for new runs:** top-1 MoE and mixture-of-heads gates are
+  the router probability (below 1); Mamba-2's conv and grouped convs initialize
+  differently; norm gains, biases and `A_log`/`D`/`dt_bias` aren't decayed;
+  diagnostics draw different data. The First Sweep Results won't reproduce
+  exactly, and existing sweep directories rerun once (old rows have no hash).
+- **Mid- and post-training checkpoint at every evaluation** by default, and
+  mid-training's early stopping waits while either eval loss or held-out
+  accuracy improves.
+- **`pretrain.py --vocab-size` is gone**; pass `--tokenizer DIR`. The sbatch
+  `VOCAB_SIZE` / `TOKENIZER_TYPE` now select (and train) the tokenizer every
+  stage uses; unset, it is the preset's.
+- **With `reset_at_document_boundaries`, `model(x)` returns no cache** unless
+  `use_cache=True` is passed.
 
 ## Decisions Made
 
@@ -268,6 +333,10 @@ What the table shows, at this small budget:
 | transformers 4.46.3 `Mamba2Mixer` | Its CPU path is slightly wrong in the final partial chunk; `tests/test_mamba2.py` works around it |
 | CI | `.github/workflows/tests.yml` has been pushed on several branches, but GitHub lists no workflows and no runs for the repository (checked 2026-10-16), so Actions is probably disabled in the repository settings |
 | `docs/modules.txt` | Cluster module versions (Transformers 4.39/4.44) predate the pinned 4.46.3 |
+| Convert the cluster's tokenizers | Any SentencePiece tokenizer (and model directory) made before the second audit: `python -m guac.tokenizer.convert DIR`, then re-tokenize and retrain what used it |
+| `huggingface_cache` in site_config | Never read (HF caches stay in `~/.cache/huggingface`); wire it to `HF_HOME` or drop the key — the user's call, since it moves caches on the cluster |
+| `Auto*` registration | The model isn't registered with `AutoConfig`/`AutoModelForCausalLM`, so tools that load through `Auto*` can't open checkpoints; load with `MixedLayerForCausalLM` |
+| Passed cache with beam search | `generate(past_key_values=..., num_beams>1)` is untested |
 
 ## Working Conventions
 

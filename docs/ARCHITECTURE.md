@@ -60,7 +60,10 @@ between layer types isn't confounded by norm placement or a missing FFN.
 each new token costs one step per layer rather than a pass over the whole
 sequence: keys and values for attention (only the window for sliding-window
 attention), and fixed-size states for conv (last k-1 inputs), Mamba-2 (conv and
-SSM state) and BASED (the running `sum phi(k) v^T`).
+SSM state) and BASED (the running `sum phi(k) v^T`). `generate()` can also
+continue a cache passed as `past_key_values`, built from all but the last prompt
+token (recurrent states can't be rewound); it is advanced in place, so
+`copy.deepcopy` it to reuse it.
 Mixers are looked up in the `MIXERS` registry in `custom_architectures.py`.
 
 **Packed documents** can be kept apart with `reset_at_document_boundaries: true`
@@ -74,8 +77,16 @@ It costs 10–40% per training step on CPU, and attention loses PyTorch's fastes
 kernels to the explicit mask, so it is off by default (GPT-style packing).
 Recurrent layers are where it matters most: without it, Mamba-2 and BASED carry
 one document's state into the next, where attention can learn to ignore what
-came before. Generation ignores it. The model's pad, BOS and EOS ids come
-from the tokenizer.
+came before. Generation ignores it; with the setting on, a forward that asks
+for no cache builds none, so `model(input_ids)` in eval mode keeps documents
+apart as training does. The model's pad, BOS and EOS ids come from the tokenizer.
+
+**Initialization and weight decay.** Linear layers start at N(0, 0.02).
+Convolutions use Kaiming init over each group's fan-out, except Mamba-2's
+depthwise convolution, which keeps PyTorch's default as in `mamba_ssm`.
+`no_weight_decay_parameter_names` lists the parameters trained without weight
+decay (biases, norm gains, and Mamba-2's `A_log`, `D` and `dt_bias`); the
+stages' trainer and the diagnostics loop both use it.
 
 **The FFN is chosen per layer** with `ffn_types` (one entry per layer):
 
@@ -263,7 +274,8 @@ class GroupedQueryAttention:
 
 `moh_attention` computes every head, then a per-token router (a small MLP on the
 token's own hidden state, so routing stays causal) picks `moh_top_k` heads and
-gives them softmax gates. The output is `o_proj(concat_h(g_h * head_h))`: each
+gives them softmax gates (over the selected heads; with `moh_top_k: 1`, the
+head's probability over all heads, so the router still gets a gradient). The output is `o_proj(concat_h(g_h * head_h))`: each
 selected head keeps its own subspace of the output projection, and unselected
 heads contribute nothing. With all heads selected at equal gates it reduces to
 multi-head attention scaled by 1/H (tested).
@@ -273,7 +285,9 @@ multi-head attention scaled by 1/H (tested).
 `SharedExpertMoE` replaces the SwiGLU FFN where `ffn_types` says `moe` (the
 default for `shared_expert_moe` layers, and allowed after any mixer). Shared
 experts always run; each token also goes to its top `moe_top_k` of `num_experts`
-routed experts, weighted by renormalized router probabilities. Dispatch sorts
+routed experts, weighted by router probabilities renormalized over the chosen
+experts (with `moe_top_k: 1`, the expert's raw probability, as in Switch
+Transformer; renormalized it would always be 1 and give the router no gradient). Dispatch sorts
 assignments by expert so each expert runs once per batch.
 
 **Load balancing**: each MoE layer computes the Switch Transformer loss

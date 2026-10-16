@@ -16,7 +16,7 @@ sbatch jobscripts/full_pipeline.sbatch
 You can customize the pipeline by setting environment variables when submitting:
 
 ```bash
-# Train a smaller model with custom vocab
+# Train a smaller model with its own 32k tokenizer (trained first if missing)
 sbatch --export=ALL,PRETRAIN_CONFIG=guac-910m,VOCAB_SIZE=32000 \
     jobscripts/full_pipeline.sbatch
 
@@ -32,10 +32,16 @@ sbatch --export=ALL,DEBUG_MODE=true,ENABLE_PROFILING=true \
 ### Configuration Variables
 
 #### Tokenizer Settings
-- `VOCAB_SIZE`: Vocabulary size (default: 60000)
-- `TOKENIZER_TYPE`: sentencepiece or bpe (default: sentencepiece)
+By default every stage uses the preset's tokenizer (`tokenizer_model_path` in
+`model_configs.yaml`), which the job trains first if it is missing (or builds,
+for the character tokenizer). These pick another one:
+- `TOKENIZER_DIR`: An existing tokenizer directory
+- `VOCAB_SIZE`: Train (if missing) and use `<scratch_dir>/tokenizers/<type>/shared_<N/1000>k` (training default: 60000)
+- `TOKENIZER_TYPE`: sentencepiece or bpe, for the same (default: sentencepiece)
 - `TOKENIZER_DATASETS`: Datasets for tokenizer training (default: fineweb)
-- `MAX_LENGTH`: Maximum sequence length (default: 1024)
+- `MAX_LENGTH`: Sequence length for pre-tokenization and pre-training (default: the preset's `max_sequence_length`)
+
+All paths resolve through `site_config.yml`'s `scratch_dir`.
 
 #### Pre-training Settings
 - `PRETRAIN_CONFIG`: Model configuration - guac-3b, guac-4.5b, guac-910m, guac-430m (default: guac-3b)
@@ -209,9 +215,11 @@ sbatch --time=72:00:00 \
 - Use checkpointing to resume jobs
 
 ### Cannot Find Tokenizer
-- Verify tokenizer training completed successfully
-- Check path: `ls scratch/tokenizers/sentencepiece/shared_60k/`
+- Verify tokenizer training completed successfully; the job prints the tokenizer it uses
+- Check path: `ls <scratch_dir>/tokenizers/sentencepiece/shared_60k/`
 - Run tokenizer training manually first
+- A SentencePiece tokenizer trained before October 2026 loads incorrectly and is
+  refused; `python -m guac.tokenizer.convert <dir>` rewrites it in place
 
 ## Advanced Usage
 
@@ -221,10 +229,11 @@ You can run stages independently by commenting out sections in the script or cre
 
 ### Checkpointing and Resuming
 
-The scripts support checkpointing. To resume from a checkpoint, modify the training calls to include:
+Checkpoints include the tokenizer. To resume from one, add to the stage's call:
 ```bash
 --resume-from-checkpoint path/to/checkpoint
 ```
+A later stage can also start from a checkpoint (`--base-model .../checkpoint-N`).
 
 ### Custom Datasets
 

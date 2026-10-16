@@ -92,6 +92,8 @@ Every run writes `metrics.jsonl` and `run_info.json` (resolved config, seed, git
 
 **`model_configs.yaml`** — Model size presets, named after their approximate parameter count. Sizes range from `guac-43m` (512 hidden, 4 layers) through `guac-3b` (3072 hidden, 24 layers, development default) up to `guac-48b` (8192 hidden, 64 layers). Each preset includes hyperparameters (lr, batch size, warmup ratio).
 
+Tokenizers are loaded through `guac.core.pipeline_utils.load_tokenizer`, which refuses SentencePiece tokenizers saved by older versions (`python -m guac.tokenizer.convert DIR` fixes them).
+
 **`site_config.yml`** — Environment-specific paths and dataset configurations (git-ignored; copy from `site_config.example.yml`). Controls `scratch_dir` layout, HuggingFace dataset streaming settings, and which datasets are used per stage.
 
 All output paths (tokenized datasets, checkpoints, models) resolve through `PathManager` from `site_config.yml`, not hardcoded. The `scratch/` directory holds all generated artifacts.
@@ -107,4 +109,4 @@ python scripts/hf_partial_download.py HuggingFaceFW/fineweb-edu --size 100MB --c
 
 ## Testing
 
-Tests live in `tests/` and run with pytest on CPU, with no GPU, network or trained artifacts needed; CI runs them on every push. They cover save/load round trips, mask handling, causality and cached generation for every layer type, the Mamba-2, BASED, sliding-window, mixture-of-heads and MoE layers against reference implementations, parameter/FLOP matching, preset validity, pre-training data (splits, packing, cache keys), the diagnostics and sweep harness, post-training data formatting, the arithmetic split, the path manager and the tokenizer vocab pipeline. See `tests/README.md`.
+Tests live in `tests/` and run with pytest on CPU, with no GPU, network or trained artifacts needed; CI runs them on every push. They cover save/load round trips, mask handling, causality and cached generation for every layer type, the Mamba-2, BASED, sliding-window, mixture-of-heads and MoE layers against reference implementations, parameter/FLOP matching, preset validity, pre-training data (splits, packing, cache keys), the diagnostics and sweep harness, post-training data formatting, the arithmetic split, the path manager, tokenizer building (SentencePiece conversion, BPE, the vocab pipeline) and the stages' resume/checkpoint/early-stopping plumbing. See `tests/README.md`.

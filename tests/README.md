@@ -15,25 +15,27 @@ python -m pytest -k causality                  # tests matching a name
 
 | File | Covers |
 |------|--------|
-| `test_architecture.py` | Save/load round trip (tied and untied embeddings), `load_base_model` rejecting checkpoints that don't match the current layer code, attention-mask handling for every layer type (all-ones, right padding, left padding), config validation |
-| `test_generation.py` | Cached generation: token-by-token and multi-token decoding match a full forward pass for every layer type, left-padded batches match single prompts, `generate()` gives the same tokens with and without the cache (greedy and beam search) |
+| `test_architecture.py` | Save/load round trip (tied and untied embeddings), `load_base_model` rejecting checkpoints that don't match the current layer code, attention-mask handling for every layer type (all-ones, right padding, left padding), config validation; convolution init (Mamba-2's default, grouped fan-out); weight-decay exemptions |
+| `test_generation.py` | Cached generation: token-by-token and multi-token decoding match a full forward pass for every layer type, left-padded batches match single prompts, `generate()` gives the same tokens with and without the cache (greedy and beam search), and continues a cache passed in |
 | `test_position_encoding.py` | RoPE (relative, norm-preserving, gives attention token order), the optional absolute table, former preset names, renamed presets within 10% of their names |
 | `test_mamba2.py` | Chunked SSD scan against the sequential recurrence (values and gradients, with document resets, and with more chunks than the chunk size, where the inter-chunk scan recurses), chunk-size invariance, agreement with transformers' reference `Mamba2Mixer`, initialization ranges |
 | `test_causality.py` | Every layer type is causal: perturbing position t never changes outputs before t |
 | `test_model_configs.py` | Every preset in `model_configs.yaml` builds a valid model config; settings pass through to the model; scientific notation reads as numbers; pretraining uses the config's batch/step settings as given; shared TrainingArguments conventions; midtraining text tasks |
 | `test_cache_keys.py` | Tokenized-dataset cache keys change with the tokenizer, dataset settings, sequence length, split, packing, hold-out size and debug subset |
-| `test_pretraining_data.py` | Validation hold-outs (seeded, streaming, on-disk splits), packing keeps every token, the packed collator keeps EOS in the loss, perplexity in logs and `metrics.jsonl`, `run_info.json` |
+| `test_pretraining_data.py` | Validation hold-outs (seeded, streaming, on-disk splits), data files and streaming/on-disk mixes load, packing keeps every token (across map batches too), the packed collator keeps EOS in the loss, perplexity in logs and `metrics.jsonl`, `run_info.json` |
 | `test_block_structure.py` | Every layer type is the same pre-norm mixer + FFN block; per-layer FFN types and widths; parameter and FLOP matching; FLOP counts against a hand count |
 | `test_based.py` | BASED: Taylor feature map, chunked linear attention against the quadratic form (values, gradients, carried state, document resets); sliding-window attention against a banded mask |
-| `test_document_boundaries.py` | `reset_at_document_boundaries`: every layer type gives packed documents exactly their outputs alone, no gradient crosses a document, batched rows with padding, generation ignores it, the tokenizer's EOS reaches the config |
-| `test_moh.py` | Mixture-of-Head attention: with all heads at equal gates it is multi-head attention, unselected heads contribute nothing |
-| `test_moe.py` | MoE: vectorized dispatch against a per-token loop, the Switch load-balancing loss (formula, router gradient, padding), added to the training loss only, under gradient checkpointing too |
-| `test_diagnostics.py` | Each synthetic task's answers follow its rule (MQAR never shows an answer in the input), accuracy counts only labeled positions, the training loops run |
-| `test_sweep.py` | Sweep specs (the examples included) are validated, budgets reach every architecture, results land in one table, an interrupted sweep resumes, shards split the runs and share one table, budget overrides |
+| `test_document_boundaries.py` | `reset_at_document_boundaries`: every layer type gives packed documents exactly their outputs alone, no gradient crosses a document, batched rows with padding, generation ignores it, the tokenizer's EOS reaches the config; an eval-mode forward applies it |
+| `test_moh.py` | Mixture-of-Head attention: with all heads at equal gates it is multi-head attention, unselected heads contribute nothing; with one head per token the router still gets a gradient |
+| `test_moe.py` | MoE: vectorized dispatch against a per-token loop, the Switch load-balancing loss (formula, router gradient, padding), added to the training loss only, under gradient checkpointing too; with top-1 routing the router learns from the LM loss |
+| `test_diagnostics.py` | Each synthetic task's answers follow its rule (MQAR never shows an answer in the input), accuracy counts only labeled positions, the training loops run; training batches never use the held-out set's seed |
+| `test_sweep.py` | Sweep specs (the examples included) are validated, budgets reach every architecture, results land in one table, an interrupted sweep resumes, shards split the runs and share one table, budget overrides; results are keyed by a hash of each run's settings (edited specs rerun), task names are unique |
 | `test_posttrain.py` | Alpaca, Dolly and conversation records format; loss covers only responses and assistant turns; truncation |
 | `test_arithmetic.py` | The train/held-out split keeps commuted twins (`a + b`, `b + a`) in the same pool |
 | `test_path_manager.py` | All generated paths resolve under `SCRATCH_DIR`; getters don't create directories |
 | `test_vocab_pipeline.py` | Tokenizer vocab spec loading, validation and partition deduplication |
+| `test_tokenizers.py` | SentencePiece → fast tokenizer conversion encodes as SentencePiece does (byte fallback, spaces, EOS, prompt tokens whole), special-token ids don't depend on `PYTHONHASHSEED`, the character tokenizer keeps newlines, byte-level BPE round trips, the vocab pipeline end to end (core ids kept, partition tokens used) |
+| `test_training_stages.py` | Resuming from a checkpoint, checkpoints hold the tokenizer, early stopping waits while any watched metric improves, checkpointing at every evaluation, weight-decay exemptions in the trainer |
 
 ## Configuration
 

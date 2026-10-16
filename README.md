@@ -156,7 +156,7 @@ make sweep SPEC=sweeps/recall_small.yaml    # architectures x tasks at a matched
 ### Tokenizer & Dataset Preparation
 ```bash
 make train-tokenizer VOCAB_SIZE=60000 DATASETS=fineweb
-make tokenize-datasets TOKENIZER_PATH=scratch/tokenizers/sentencepiece/shared_60k
+make tokenize-datasets CONFIG=guac-3b DATASETS=wikitext-103   # the preset's tokenizer and length
 ```
 
 ### Utilities
