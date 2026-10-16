@@ -34,7 +34,7 @@ try:
     from scripts.training.core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
     from scripts.training.core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
     from scripts.training.core.arithmetic import (
-        CATEGORIES, generate_problems, format_answer, save_format, evaluate_accuracy
+        CATEGORIES, SPLIT_VERSION, generate_problems, format_answer, save_format, evaluate_accuracy
     )
     from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
     from scripts.training.core.pipeline_utils import (
@@ -47,7 +47,7 @@ except ImportError:
         from ..core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
         from ..core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
         from ..core.arithmetic import (
-            CATEGORIES, generate_problems, format_answer, save_format, evaluate_accuracy
+            CATEGORIES, SPLIT_VERSION, generate_problems, format_answer, save_format, evaluate_accuracy
         )
         from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
         from ..core.pipeline_utils import (
@@ -61,7 +61,7 @@ except ImportError:
         from core.callbacks import CustomProgressCallback, ProfilingCallback, LayerTimingCallback
         from core.custom_architectures import MixedLayerConfig, MixedLayerForCausalLM
         from core.arithmetic import (
-            CATEGORIES, generate_problems, format_answer, save_format, evaluate_accuracy
+            CATEGORIES, SPLIT_VERSION, generate_problems, format_answer, save_format, evaluate_accuracy
         )
         from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size, tokenizer_cache_tag
         from core.pipeline_utils import (
@@ -84,7 +84,7 @@ def create_arithmetic_dataset(tokenizer: Any, num_samples: int = 50000, force_re
     """
     from datasets import Dataset
 
-    cache_key = (f"arithmetic_{tokenizer_cache_tag(tokenizer)}_samples{num_samples}"
+    cache_key = (f"arithmetic_split{SPLIT_VERSION}_{tokenizer_cache_tag(tokenizer)}_samples{num_samples}"
                  f"{'_heldout' if held_out else '_train'}"
                  f"{'_rev' if reverse_answers else ''}{'_ansloss' if answer_only_loss else ''}_seed{seed}")
     cache_dir = get_cache_directory("midtraining", cache_key)
@@ -442,7 +442,7 @@ def main():
         seed=args.seed, report_to=args.report_to,
     )
 
-    callbacks = [CustomProgressCallback(tokenizer, 50)]
+    callbacks = [CustomProgressCallback(tokenizer, sample_every=200)]
     if track_accuracy:
         # Before EarlyStoppingCallback, which reads the metric this adds
         callbacks.append(ArithmeticAccuracyCallback(tokenizer, args.accuracy_eval_per_category,

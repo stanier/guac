@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
 """
-Guac Post-training Script - Instruction Tuning & Alignment
+Guac Post-training Script - Instruction Tuning & Supervised Fine-Tuning
 
-Handles post-training phases like instruction tuning and supervised fine-tuning.
+Fine-tunes a pre- or mid-trained model on instruction or conversation data.
+Loss covers only the response tokens (assistant turns): prompts are masked.
+
+Datasets (--datasets, any mix):
+    alpaca, dolly         instruction / input / output records (Hugging Face)
+    ultrachat             multi-turn conversations ("messages"; Hugging Face)
+    path.json, .jsonl,    either format from disk: records with instruction
+    or a saved dataset    (+ optional input/context) and output/response, or
+                          with messages = [{role, content}, ...]
+    synthetic             a small generated arithmetic set, for offline smoke
+                          tests only
 
 Usage:
-    python posttrain.py --base-model ./models/midtrain_arithmetic --mode instruction
-    python posttrain.py --base-model ./models/pretrain_nano --mode sft --dataset alpaca
-    python posttrain.py --base-model ./models/midtrain_code --mode instruction --datasets /path/to/instructions.json
+    python posttrain.py --base-model ./scratch/models/midtraining/guac-3b_arithmetic --mode instruction
+    python posttrain.py --base-model ./scratch/models/pretraining/guac-3b --mode sft --datasets ultrachat
+    python posttrain.py --base-model ./model --mode instruction --datasets /path/to/instructions.json
 """
 
-import os, sys, yaml, argparse, torch, json, random
-from typing import List, Dict, Any, Optional
+import os, sys, argparse, json, random
+from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -19,414 +29,227 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.append(str(project_root))
 
-from transformers import (
-    AutoTokenizer, Trainer, TrainingArguments,
-    DataCollatorForLanguageModeling, EarlyStoppingCallback
+import torch
+from transformers import TrainingArguments, DataCollatorForSeq2Seq, EarlyStoppingCallback
+from datasets import load_dataset, load_from_disk, concatenate_datasets, Dataset
+
+from scripts.training.core.arithmetic import CATEGORIES, generate_problems
+from scripts.training.core.callbacks import CustomProgressCallback, ProfilingCallback
+from scripts.training.core.pipeline_utils import (
+    load_base_model, get_output_directory, run_training_loop, apply_debug_mode, save_trained_model,
+    GuacTrainer, MetricsLoggerCallback, write_run_info,
 )
-from datasets import load_dataset, load_from_disk, Dataset
 
-try:
-    from scripts.training.core.callbacks import CustomProgressCallback, ProfilingCallback
-    from scripts.training.core.custom_architectures import MixedLayerForCausalLM
-    from scripts.training.core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size
-    from scripts.training.core.pipeline_utils import (
-        load_base_model, create_standard_data_collator, get_output_directory,
-        run_training_loop, apply_debug_mode, save_trained_model
-    )
-except ImportError:
-    try:
-        from ..core.callbacks import CustomProgressCallback, ProfilingCallback
-        from ..core.custom_architectures import MixedLayerForCausalLM
-        from ..core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size
-        from ..core.pipeline_utils import (
-            load_base_model, create_standard_data_collator, get_output_directory,
-            run_training_loop, apply_debug_mode, save_trained_model
-        )
-    except ImportError:
-        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        sys.path.insert(0, parent_dir)
-        from core.callbacks import CustomProgressCallback, ProfilingCallback
-        from core.custom_architectures import MixedLayerForCausalLM
-        from core.cache_utils import get_cache_directory, load_cached_dataset, save_dataset_to_cache, get_vocab_size
-        from core.pipeline_utils import (
-            load_base_model, create_standard_data_collator, get_output_directory,
-            run_training_loop, apply_debug_mode, save_trained_model
-        )
+INSTRUCTION_TEMPLATE = "### Instruction:\n{instruction}\n\n### Response:\n"
+INSTRUCTION_WITH_INPUT_TEMPLATE = "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:\n"
+ROLE_PREFIXES = {'system': "System: ", 'user': "User: ", 'assistant': "Assistant: "}
 
-try:
-    from scripts.training.core.prompt_templates import apply_default_template
-except ImportError:
-    def apply_default_template(text):
-        return text
+# Default datasets when --datasets isn't given
+DEFAULT_DATASETS = {'instruction': ['alpaca'], 'sft': ['ultrachat']}
 
 
-def create_instruction_dataset(tokenizer: Any, num_samples: int = 10000, force_retokenize: bool = False) -> Dataset:
-    """Create synthetic instruction dataset with caching support."""
-    vocab_size = get_vocab_size(tokenizer)
-    cache_key = f"instruction_vocab{vocab_size}_samples{num_samples}"
-    cache_dir = get_cache_directory("posttraining", cache_key)
-
-    cached = load_cached_dataset(cache_dir, force_retokenize)
-    if cached is not None:
-        return cached
-
-    print(f"Generating {num_samples} instruction examples...")
-
-    instructions = []
-
-    math_templates = [
-        ("What is {a} + {b}?", "The answer is {result}."),
-        ("Calculate {a} * {b}", "{a} * {b} = {result}"),
-        ("Solve: {a} - {b}", "{a} - {b} equals {result}"),
-        ("What's {a} divided by {b}?", "{a} ÷ {b} = {result}"),
-    ]
-
-    for _ in range(num_samples // 4):
-        template = random.choice(math_templates)
-        a, b = random.randint(1, 100), random.randint(1, 100)
-
-        if "divided by" in template[0]:
-            result = random.randint(1, 20)
-            a = b * result
-        elif "*" in template[0]:
-            result = a * b
-        elif "+" in template[0]:
-            result = a + b
-        elif "-" in template[0]:
-            result = a - b
-
-        instruction = template[0].format(a=a, b=b)
-        response = template[1].format(a=a, b=b, result=result)
-        instructions.append({"instruction": instruction, "response": response})
-
-    general_examples = [
-        {
-            "instruction": "Explain what artificial intelligence is.",
-            "response": "Artificial intelligence (AI) is a branch of computer science that aims to create machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving."
-        },
-        {
-            "instruction": "Write a Python function to check if a number is prime.",
-            "response": "def is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True"
-        },
-        {
-            "instruction": "What are the benefits of exercise?",
-            "response": "Exercise has numerous benefits including improved cardiovascular health, stronger muscles and bones, better mental health, increased energy levels, and reduced risk of chronic diseases."
-        }
-    ]
-
-    for _ in range(num_samples // 4):
-        instructions.append(random.choice(general_examples))
-
-    qa_examples = [
-        {
-            "instruction": "What is the capital of France?",
-            "response": "The capital of France is Paris."
-        },
-        {
-            "instruction": "How do you make a sandwich?",
-            "response": "To make a sandwich: 1) Take two slices of bread, 2) Add your desired fillings like meat, cheese, vegetables, 3) Add condiments if desired, 4) Place the second slice on top."
-        },
-        {
-            "instruction": "What is photosynthesis?",
-            "response": "Photosynthesis is the process by which plants use sunlight, water, and carbon dioxide to produce glucose and oxygen. It's essential for life on Earth as it provides food for plants and oxygen for other organisms."
-        }
-    ]
-
-    for _ in range(num_samples // 4):
-        instructions.append(random.choice(qa_examples))
-
-    creative_examples = [
-        {
-            "instruction": "Write a short poem about nature.",
-            "response": "Trees sway gently in the breeze,\nLeaves dancing with such ease.\nBirds sing songs both sweet and clear,\nNature's music fills the air."
-        },
-        {
-            "instruction": "Create a story about a robot learning to cook.",
-            "response": "CHEF-3000 stared at the kitchen with confusion. Its sensors detected various ingredients, but cooking was not in its programming. Through trial and error, burning several meals, the robot slowly learned. By week's end, CHEF-3000 was creating delicious dishes, having discovered that cooking was both science and art."
-        }
-    ]
-
-    for _ in range(num_samples // 4):
-        instructions.append(random.choice(creative_examples))
-
-    dataset = Dataset.from_list(instructions)
-    save_dataset_to_cache(dataset, cache_dir)
-    return dataset
+def synthetic_instruction_records(num_samples: int = 2000, seed: int = 0) -> List[Dict[str, str]]:
+    """Arithmetic instructions from the training pool (see core/arithmetic.py). Smoke tests only."""
+    rng = random.Random(seed)
+    records = []
+    for category in CATEGORIES:
+        for expression, _, result in generate_problems(category, num_samples // len(CATEGORIES), rng, held_out=False):
+            records.append({'instruction': f"What is {expression}?", 'output': f"{expression} = {result}"})
+    rng.shuffle(records)
+    return records
 
 
-def load_instruction_datasets(dataset_names: List[str]) -> Dataset:
-    """Load instruction datasets."""
-    datasets = []
-
-    for dataset_name in dataset_names:
-        print(f"Loading instruction dataset: {dataset_name}")
-
-        try:
-            if dataset_name == 'alpaca':
-                dataset = load_dataset("tatsu-lab/alpaca")
-                datasets.append(dataset['train'])
-            elif dataset_name == 'dolly':
-                dataset = load_dataset("databricks/databricks-dolly-15k")
-                datasets.append(dataset['train'])
-            elif os.path.exists(dataset_name):
-                if dataset_name.endswith('.json'):
-                    with open(dataset_name) as f:
-                        data = json.load(f)
-                    datasets.append(Dataset.from_list(data))
-                else:
-                    datasets.append(load_from_disk(dataset_name))
-        except Exception as e:
-            print(f"Could not load dataset {dataset_name}: {e}")
-
-    if not datasets:
-        print("No external datasets loaded, using synthetic instruction data")
-        return create_instruction_dataset(None, 5000)
-
-    if len(datasets) == 1:
-        return datasets[0]
-    else:
-        from datasets import concatenate_datasets
-        return concatenate_datasets(datasets)
+def load_records(name: str) -> Dataset:
+    """Load one dataset by name or path, unmodified."""
+    if name == 'alpaca':
+        return load_dataset("tatsu-lab/alpaca", split='train')
+    if name == 'dolly':
+        return load_dataset("databricks/databricks-dolly-15k", split='train')
+    if name == 'ultrachat':
+        return load_dataset("HuggingFaceH4/ultrachat_200k", split='train_sft')
+    if name == 'synthetic':
+        print("⚠️  Using the synthetic arithmetic instruction set: for smoke tests, not real post-training")
+        return Dataset.from_list(synthetic_instruction_records())
+    if name.endswith('.jsonl') and os.path.isfile(name):
+        with open(name) as f:
+            return Dataset.from_list([json.loads(line) for line in f if line.strip()])
+    if name.endswith('.json') and os.path.isfile(name):
+        with open(name) as f:
+            return Dataset.from_list(json.load(f))
+    if os.path.isdir(name):
+        dataset = load_from_disk(name)
+        return dataset['train'] if hasattr(dataset, 'keys') else dataset
+    raise ValueError(f"Unknown post-training dataset {name!r}: use alpaca, dolly, ultrachat, synthetic, "
+                     f"a .json/.jsonl file or a saved dataset directory")
 
 
-def format_instruction_data(examples: Dict[str, List], tokenizer: Any, max_length: int = 512) -> Dict[str, List]:
-    """Format instruction data with proper templates."""
-    formatted_texts = []
+def to_segments(record: Dict[str, Any]) -> List[Tuple[str, bool]]:
+    """
+    A record as (text, trained) segments: prompts and user turns are not
+    trained on, responses and assistant turns are.
 
-    for i in range(len(examples['instruction'])):
-        instruction = examples['instruction'][i]
-        response = examples['response'][i]
-        formatted_text = f"### Instruction:\n{instruction}\n\n### Response:\n{response}{tokenizer.eos_token}"
-        formatted_texts.append(formatted_text)
-
-    tokenized = tokenizer(
-        formatted_texts,
-        truncation=True,
-        padding=False,
-        max_length=max_length,
-        return_tensors=None
-    )
-
-    return tokenized
-
-
-def create_conversation_dataset(tokenizer: Any, force_retokenize: bool = False) -> Dataset:
-    """Create conversation dataset for SFT with caching support."""
-    vocab_size = get_vocab_size(tokenizer)
-    cache_key = f"conversation_vocab{vocab_size}_samples1000"
-    cache_dir = get_cache_directory("posttraining", cache_key)
-
-    cached = load_cached_dataset(cache_dir, force_retokenize)
-    if cached is not None:
-        return cached
-
-    print("Creating conversation dataset...")
-
-    conversations = [
-        {
-            "messages": [
-                {"role": "user", "content": "Hello! How are you today?"},
-                {"role": "assistant", "content": "Hello! I'm doing well, thank you for asking. I'm here and ready to help with any questions or tasks you might have. How can I assist you today?"}
-            ]
-        },
-        {
-            "messages": [
-                {"role": "user", "content": "Can you help me understand machine learning?"},
-                {"role": "assistant", "content": "Absolutely! Machine learning is a subset of AI where computers learn patterns from data without being explicitly programmed for each task. There are three main types: supervised learning (learning from labeled examples), unsupervised learning (finding patterns in unlabeled data), and reinforcement learning (learning through trial and error). Would you like me to explain any of these in more detail?"}
-            ]
-        },
-        {
-            "messages": [
-                {"role": "user", "content": "What's the weather like?"},
-                {"role": "assistant", "content": "I don't have access to real-time weather data, so I can't tell you the current weather conditions. To get accurate weather information, I'd recommend checking a weather app, website like weather.com, or asking a voice assistant that has internet access. Is there anything else I can help you with?"}
-            ]
-        }
-    ]
-
-    expanded = []
-    for _ in range(1000):
-        expanded.append(random.choice(conversations))
-
-    dataset = Dataset.from_list(expanded)
-    save_dataset_to_cache(dataset, cache_dir)
-    return dataset
-
-
-def format_conversation_data(examples: Dict[str, List], tokenizer: Any, max_length: int = 512) -> Dict[str, List]:
-    """Format conversation data for training."""
-    formatted_texts = []
-
-    for messages in examples['messages']:
-        formatted_parts = []
-        for message in messages:
+    Accepts instruction records (instruction, optional input or context, and
+    output or response; Alpaca and Dolly) and conversations (messages).
+    """
+    if record.get('messages'):
+        segments = []
+        for message in record['messages']:
             role = message['role']
-            content = message['content']
-            if role == 'user':
-                formatted_parts.append(f"User: {content}")
+            if role not in ROLE_PREFIXES:
+                raise ValueError(f"Unknown message role {role!r}")
+            if role == 'assistant':
+                segments += [(ROLE_PREFIXES[role], False), (message['content'] + "\n", True)]
             else:
-                formatted_parts.append(f"Assistant: {content}")
+                segments.append((ROLE_PREFIXES[role] + message['content'] + "\n", False))
+        return segments
 
-        formatted_text = "\n".join(formatted_parts) + tokenizer.eos_token
-        formatted_texts.append(formatted_text)
+    instruction = record.get('instruction')
+    response = record.get('output', record.get('response'))
+    if instruction is None or response is None:
+        raise ValueError(f"Record has neither messages nor instruction plus output/response: {sorted(record)}")
+    context = record.get('input') or record.get('context')
+    template = INSTRUCTION_WITH_INPUT_TEMPLATE if context else INSTRUCTION_TEMPLATE
+    return [(template.format(instruction=instruction, input=context), False), (response, True)]
 
-    tokenized = tokenizer(
-        formatted_texts,
-        truncation=True,
-        padding=False,
-        max_length=max_length,
-        return_tensors=None
+
+def tokenize_segments(segments: List[Tuple[str, bool]], tokenizer: Any, max_length: int) -> Dict[str, List[int]]:
+    """
+    Token ids of the segments joined, followed by EOS, truncated to
+    max_length. Labels copy the trained segments (and EOS) and are -100 elsewhere.
+    """
+    input_ids, labels = [], []
+    for text, trained in segments:
+        ids = tokenizer(text, add_special_tokens=False)['input_ids']
+        input_ids += ids
+        labels += ids if trained else [-100] * len(ids)
+    if tokenizer.eos_token_id is not None:
+        input_ids.append(tokenizer.eos_token_id)
+        labels.append(tokenizer.eos_token_id)
+    return {'input_ids': input_ids[:max_length], 'attention_mask': [1] * min(len(input_ids), max_length),
+            'labels': labels[:max_length]}
+
+
+def prepare_posttraining_dataset(dataset_names: List[str], tokenizer: Any, max_length: int = 512,
+                                 train_on_prompts: bool = False) -> Dataset:
+    """Load, format and tokenize the datasets, dropping examples with no response left after truncation."""
+    datasets = [load_records(name) for name in dataset_names]
+    dataset = datasets[0] if len(datasets) == 1 else concatenate_datasets(datasets)
+
+    def tokenize(record):
+        segments = to_segments(record)
+        if train_on_prompts:
+            segments = [(text, True) for text, _ in segments]
+        return tokenize_segments(segments, tokenizer, max_length)
+
+    tokenized = dataset.map(tokenize, remove_columns=dataset.column_names, desc="Tokenizing")
+    return tokenized.filter(lambda example: any(label != -100 for label in example['labels']),
+                            desc="Dropping examples with no response tokens")
+
+
+def create_posttraining_arguments(output_dir: str, mode: str, overrides: Dict[str, Any]) -> TrainingArguments:
+    """Training arguments for a mode, with command-line overrides applied (None leaves a default)."""
+    defaults = {
+        'instruction': dict(num_train_epochs=2, per_device_train_batch_size=4, gradient_accumulation_steps=8,
+                            learning_rate=5e-6, weight_decay=0.0001, warmup_ratio=0.05, logging_steps=25,
+                            save_steps=200, eval_steps=100),
+        'sft': dict(num_train_epochs=3, per_device_train_batch_size=2, gradient_accumulation_steps=16,
+                    learning_rate=1e-5, weight_decay=0.001, warmup_ratio=0.1, logging_steps=50,
+                    save_steps=500, eval_steps=250),
+    }[mode]
+    defaults.update({key: value for key, value in overrides.items() if value is not None})
+    report_to = defaults.pop('report_to', 'none')
+    return TrainingArguments(
+        output_dir=output_dir,
+        per_device_eval_batch_size=defaults['per_device_train_batch_size'],
+        lr_scheduler_type='cosine',
+        save_total_limit=2,
+        fp16=torch.cuda.is_available(),
+        eval_strategy="steps",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        report_to=[] if report_to == 'none' else report_to,
+        **defaults,
     )
-
-    return tokenized
-
-
-def prepare_posttraining_dataset(mode: str, tokenizer: Any, dataset_names: Optional[List[str]] = None,
-                               force_retokenize: bool = False) -> Dataset:
-    """Prepare dataset based on post-training mode."""
-    if mode == 'instruction':
-        if dataset_names:
-            dataset = load_instruction_datasets(dataset_names)
-        else:
-            dataset = create_instruction_dataset(tokenizer, force_retokenize=force_retokenize)
-
-        formatted_dataset = dataset.map(
-            lambda examples: format_instruction_data(examples, tokenizer),
-            batched=True,
-            remove_columns=dataset.column_names
-        )
-        return formatted_dataset
-
-    elif mode == 'sft':
-        if dataset_names:
-            return load_instruction_datasets(dataset_names)
-        else:
-            dataset = create_conversation_dataset(tokenizer, force_retokenize)
-            formatted_dataset = dataset.map(
-                lambda examples: format_conversation_data(examples, tokenizer),
-                batched=True,
-                remove_columns=dataset.column_names
-            )
-            return formatted_dataset
-
-    else:
-        raise ValueError(f"Unknown mode: {mode}. Available: instruction, sft")
-
-
-def create_posttraining_arguments(output_dir: str, mode: str) -> TrainingArguments:
-    """Create training arguments for post-training."""
-    if mode == 'instruction':
-        return TrainingArguments(
-            output_dir=output_dir,
-            num_train_epochs=2,
-            per_device_train_batch_size=4,
-            per_device_eval_batch_size=4,
-            gradient_accumulation_steps=8,
-            learning_rate=5e-6,
-            weight_decay=0.0001,
-            warmup_ratio=0.05,
-            lr_scheduler_type='cosine',
-            logging_steps=25,
-            save_steps=200,
-            eval_steps=100,
-            save_total_limit=2,
-            fp16=True,
-            dataloader_drop_last=True,
-            eval_strategy="steps",
-            load_best_model_at_end=True,
-            metric_for_best_model="eval_loss",
-            report_to=[],
-            seed=42,
-        )
-    else:
-        return TrainingArguments(
-            output_dir=output_dir,
-            num_train_epochs=3,
-            per_device_train_batch_size=2,
-            per_device_eval_batch_size=2,
-            gradient_accumulation_steps=16,
-            learning_rate=1e-5,
-            weight_decay=0.001,
-            warmup_ratio=0.1,
-            lr_scheduler_type='cosine',
-            logging_steps=50,
-            save_steps=500,
-            eval_steps=250,
-            save_total_limit=2,
-            fp16=True,
-            dataloader_drop_last=True,
-            eval_strategy="steps",
-            load_best_model_at_end=True,
-            metric_for_best_model="eval_loss",
-            report_to=[],
-            seed=42,
-        )
 
 
 def main():
     parser = argparse.ArgumentParser(description="Guac Post-training Script")
 
     parser.add_argument('--base-model', type=str, required=True,
-                       help='Path to base model (pre-trained or mid-trained)')
-    parser.add_argument('--mode', type=str, required=True,
-                       choices=['instruction', 'sft'],
-                       help='Post-training mode')
+                        help='Path to base model (pre-trained or mid-trained)')
+    parser.add_argument('--mode', type=str, required=True, choices=['instruction', 'sft'],
+                        help='Post-training mode: sets default datasets and hyperparameters')
     parser.add_argument('--datasets', type=str, nargs='+',
-                       help='Instruction/conversation datasets')
-    parser.add_argument('--max-length', type=int, default=512,
-                       help='Maximum sequence length')
-    parser.add_argument('--output-dir', type=str,
-                       help='Training output directory')
-    parser.add_argument('--resume-from-checkpoint', type=str,
-                       help='Resume from checkpoint')
-    parser.add_argument('--debug', action='store_true',
-                       help='Debug mode with smaller datasets')
-    parser.add_argument('--enable-profiling', action='store_true',
-                       help='Enable profiling callbacks')
+                        help='Datasets (default: alpaca for instruction, ultrachat for sft; see the module docstring)')
+    parser.add_argument('--max-length', type=int, default=512, help='Maximum sequence length')
+    parser.add_argument('--train-on-prompts', action='store_true',
+                        help='Also compute loss on prompts and user turns (default: responses only)')
+    parser.add_argument('--output-dir', type=str, help='Training output directory')
+    parser.add_argument('--resume-from-checkpoint', type=str, help='Resume from checkpoint')
+    parser.add_argument('--debug', action='store_true', help='Debug mode with smaller datasets')
+    parser.add_argument('--enable-profiling', action='store_true', help='Enable profiling callbacks')
     parser.add_argument('--force-retokenize', action='store_true',
-                       help='Force re-tokenize dataset even if cached')
+                        help='Accepted for pipeline compatibility; post-training data is not cached')
+    parser.add_argument('--epochs', type=float, help='Training epochs (default depends on --mode)')
+    parser.add_argument('--max-steps', type=int, help='Optimizer steps (overrides --epochs)')
+    parser.add_argument('--batch-size', type=int, help='Per-device batch size')
+    parser.add_argument('--grad-accum', type=int, help='Gradient accumulation steps')
+    parser.add_argument('--learning-rate', type=float, help='Peak learning rate')
+    parser.add_argument('--eval-steps', type=int, help='Evaluate every N steps')
+    parser.add_argument('--save-steps', type=int, help='Checkpoint every N steps (a multiple of --eval-steps)')
+    parser.add_argument('--seed', type=int, default=42, help='Seed for the eval split, data order and dropout')
+    parser.add_argument('--report-to', type=str, default='none',
+                        help='Also log to this tracker, e.g. wandb (metrics.jsonl is always written)')
 
     args = parser.parse_args()
 
     model, tokenizer = load_base_model(args.base_model)
-
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print(f"Preparing dataset for {args.mode} mode...")
-    dataset = prepare_posttraining_dataset(args.mode, tokenizer, args.datasets, args.force_retokenize)
-
+    dataset_names = args.datasets or DEFAULT_DATASETS[args.mode]
+    print(f"Preparing {args.mode} data from {', '.join(dataset_names)}...")
+    dataset = prepare_posttraining_dataset(dataset_names, tokenizer, args.max_length, args.train_on_prompts)
     if args.debug:
         dataset = apply_debug_mode(dataset, 500)
-
-    split_dataset = dataset.train_test_split(test_size=0.1, seed=42)
+    split = dataset.train_test_split(test_size=min(0.1, 2000 / len(dataset)), seed=args.seed)
 
     base_model_name = Path(args.base_model).name
     output_dir = get_output_directory("posttraining", base_model_name, args.output_dir, mode=args.mode)
 
-    training_args = create_posttraining_arguments(output_dir, args.mode)
+    training_args = create_posttraining_arguments(output_dir, args.mode, {
+        'num_train_epochs': args.epochs, 'max_steps': args.max_steps,
+        'per_device_train_batch_size': args.batch_size, 'gradient_accumulation_steps': args.grad_accum,
+        'learning_rate': args.learning_rate, 'eval_steps': args.eval_steps, 'save_steps': args.save_steps,
+        'seed': args.seed, 'report_to': args.report_to,
+    })
 
     callbacks = [
-        CustomProgressCallback(tokenizer, 25),
-        EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=0.001)
+        CustomProgressCallback(tokenizer, sample_every=200),
+        EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=0.001),
+        MetricsLoggerCallback(os.path.join(output_dir, 'metrics.jsonl')),
     ]
-
     if args.enable_profiling:
         callbacks.append(ProfilingCallback(log_every_n_steps=25))
 
-    data_collator = create_standard_data_collator(training_args, tokenizer)
+    # Pads labels with -100 so masked prompt tokens stay masked
+    data_collator = DataCollatorForSeq2Seq(tokenizer, label_pad_token_id=-100,
+                                           pad_to_multiple_of=8 if training_args.fp16 else None)
 
-    trainer = Trainer(
+    trainer = GuacTrainer(
         model=model,
         args=training_args,
-        train_dataset=split_dataset['train'],
-        eval_dataset=split_dataset['test'],
+        train_dataset=split['train'],
+        eval_dataset=split['test'],
         data_collator=data_collator,
         callbacks=callbacks,
     )
 
+    write_run_info(output_dir, 'posttraining', vars(args), model=model, seed=args.seed,
+                   base_model=args.base_model, datasets=dataset_names)
     print(f"Starting {args.mode} post-training...")
     print(f"Base model: {args.base_model}")
-    print(f"Training samples: {len(split_dataset['train']):,}")
+    print(f"Training examples: {len(split['train']):,} | Eval examples: {len(split['test']):,}")
     print(f"Output: {output_dir}")
 
     run_training_loop(trainer, args.resume_from_checkpoint)

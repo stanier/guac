@@ -12,81 +12,55 @@ from tqdm.auto import tqdm
 
 
 class CustomProgressCallback(TrainerCallback):
-    """Custom progress callback with live inference display during training."""
+    """
+    Progress bar showing the latest loss, learning rate and gradient norm, plus
+    a status line with a short greedy sample from the model every
+    `sample_every` steps (0 turns sampling off).
+    """
 
-    def __init__(self, tokenizer, log_steps):
+    def __init__(self, tokenizer, sample_every: int = 200, max_new_tokens: int = 32):
         self.tokenizer = tokenizer
+        self.sample_every = sample_every
+        self.max_new_tokens = max_new_tokens
         self.pbar = None
         self.status_bar = None
-        self.log_steps = log_steps
         self.last_train_log = None
-        self.last_prediction = "None"
 
     def on_train_begin(self, args, state, control, **kwargs):
-        p = self.last_prediction
         self.status_bar = tqdm(total=1, bar_format='{desc}', position=0, leave=False)
         self.pbar = tqdm(total=state.max_steps, desc="Training", position=1, mininterval=0.5)
-        self.log_steps = getattr(args, 'logging_steps', 100)
-        self.postfix_dict = {'loss': 'N/A', 'lr': 'N/A', 'grdNrm': 'N/A'}
 
     def on_step_end(self, args, state, control, model=None, **kwargs):
-        if self.pbar and self.status_bar:
-            if state.global_step % self.log_steps == 0 or state.global_step == 1:
-                current_epoch = state.epoch if state.epoch is not None else 0
-                self.pbar.set_description_str(f"Epoch:{current_epoch:.2f}  ")
+        if not (self.pbar and self.status_bar):
+            return
+        latest = next((entry for entry in reversed(state.log_history) if 'loss' in entry or 'train_loss' in entry), None)
+        if latest is not None and latest is not self.last_train_log:
+            tqdm.write(f"Training log: {latest}")
+            loss = latest.get('loss', latest.get('train_loss'))
+            parts = [f"Epoch:{state.epoch or 0:.2f}", f"Loss:{loss:.3f}"]
+            if 'learning_rate' in latest:
+                parts.append(f"LR:{latest['learning_rate']:.2e}")
+            if 'grad_norm' in latest:
+                parts.append(f"GradNorm:{latest['grad_norm']:.2f}")
+            self.pbar.set_description_str("  ".join(parts) + "  ")
+            self.last_train_log = latest
+        self.pbar.update(1)
 
-            if state.log_history:
-                latest_train_log = None
-                for log_entry in reversed(state.log_history):
-                    if 'loss' in log_entry or 'train_loss' in log_entry or 'learning_rate' in log_entry:
-                        latest_train_log = log_entry
-                        break
+        if self.sample_every and model is not None and state.global_step % self.sample_every == 0:
+            self.status_bar.set_description(self.sample(model))
 
-                if latest_train_log and not (self.last_train_log == latest_train_log):
-                    tqdm.write(f"Training log: {latest_train_log}")
-
-                    d = {'loss': -1, 'lr': -1, 'grdNrm': -1}
-
-                    if 'loss' in latest_train_log: d['loss'] = f"{latest_train_log['loss']:.2f}"
-                    elif 'train_loss' in latest_train_log: d['loss'] = f"{latest_train_log['train_loss']:.2f}"
-
-                    if 'learning_rate' in latest_train_log: d['lr'] = f"{latest_train_log['learning_rate']:.2f}"
-                    if 'grad_norm' in latest_train_log: d['grad_norm'] = f"{latest_train_log['grad_norm']:.2f}"
-
-                    current_epoch = state.epoch if state.epoch is not None else 0
-                    self.pbar.set_description_str(f"Epoch:{current_epoch:.2f} Loss:{d['loss']} LR:{d['lr']} GrdNrm:{d['grad_norm']}  ")
-
-                    self.last_train_log = latest_train_log
-
-            self.pbar.update(1)
-
-            if state.global_step % self.log_steps == 0 and model is not None:
-                inference_kwargs = {
-                    "max_length": 64,
-                    "num_return_sequences": 1,
-                    "pad_token_id": self.tokenizer.pad_token_id,
-                    "eos_token_id": self.tokenizer.eos_token_id,
-                    "do_sample": False,
-                }
-                def predict(input_text):
-                    with torch.no_grad():
-                        model_dtype = next(model.parameters()).dtype
-                        inputs = self.tokenizer(input_text, return_tensors="pt").to(model.device)
-                        generated_ids = model.generate(inputs["input_ids"], **inference_kwargs)[0]
-                        decoded_without_special = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-                        # Clean up excessive whitespace but preserve normal spacing
-                        return decoded_without_special.replace("  ", " ").strip()
-
-                model.eval()
-
-                # Use BOS token for generation start
-                bos_text = self.tokenizer.bos_token or getattr(self.tokenizer, 'cls_token', None) or ""
-                p = predict(bos_text)
-                #p = predict("")
-                self.status_bar.set_description(p)
-                self.last_p = p
-
-                model.train()
+    def sample(self, model) -> str:
+        """Greedy continuation of the BOS token (or an empty prompt)."""
+        prompt = self.tokenizer.bos_token or getattr(self.tokenizer, 'cls_token', None) or ""
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(model.device)
+        model.eval()
+        with torch.no_grad():
+            generated = model.generate(inputs["input_ids"], attention_mask=inputs.get("attention_mask"),
+                                       max_new_tokens=self.max_new_tokens, do_sample=False,
+                                       pad_token_id=self.tokenizer.pad_token_id,
+                                       eos_token_id=self.tokenizer.eos_token_id)[0]
+        model.train()
+        return self.tokenizer.decode(generated, skip_special_tokens=True).replace("\n", " ").strip()
 
     def on_train_end(self, args, state, control, **kwargs):
         if self.status_bar: self.status_bar.close()

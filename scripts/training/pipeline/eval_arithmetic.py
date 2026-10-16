@@ -23,7 +23,7 @@ sys.path.append(str(project_root))
 
 import torch
 
-from scripts.training.core.arithmetic import CATEGORIES, evaluate_accuracy, load_format
+from scripts.training.core.arithmetic import CATEGORIES, SPLIT_VERSION, evaluate_accuracy, load_format
 from scripts.training.core.pipeline_utils import load_base_model
 
 
@@ -45,9 +45,14 @@ def main():
                        help='Problem-sampling seed')
     args = parser.parse_args()
 
+    saved_format = load_format(args.model)
     reverse = args.reverse_answers
     if reverse is None:
-        reverse = load_format(args.model)['reverse_answers']
+        reverse = saved_format['reverse_answers']
+    if saved_format.get('split_version', 1) != SPLIT_VERSION and 'holdout_fraction' in saved_format:
+        print(f"⚠️  This model was trained with train/held-out split version {saved_format.get('split_version', 1)} "
+              f"(current: {SPLIT_VERSION}). Some held-out problems' commuted twins (b + a for a + b) were in its "
+              f"training data, so accuracy may be inflated.")
 
     model, tokenizer = load_base_model(args.model)
     if torch.cuda.is_available():

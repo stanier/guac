@@ -13,6 +13,8 @@ defaults:
   # Also send metrics to a tracker (e.g. wandb); metrics.jsonl is always written
   report_to: none
   step_val: 1
+  # Show a short greedy sample from the model every this many steps (0 disables)
+  sample_every: 200
   learning_rate: 8e-4
   warmup_ratio: 0.05
   weight_decay: 0.01

@@ -2,7 +2,9 @@
 Arithmetic task definitions shared by mid-training and evaluation.
 
 Problems are split into train and held-out pools by a hash of the expression,
-so evaluation never measures recall of problems seen during training. This
+so evaluation never measures recall of problems seen during training.
+Commuted twins (a + b and b + a) hash the same, so one can't be trained on
+while the other is evaluated. This
 matters because some categories have small problem spaces (div has 5,000
 distinct problems, mul 10,000) that a 50k-sample training set mostly covers.
 
@@ -15,6 +17,7 @@ import hashlib
 import json
 import os
 import random
+import re
 from typing import Iterator, Tuple
 
 CATEGORIES = ['add/sub', 'mul', 'div', 'paren']
@@ -23,6 +26,10 @@ CATEGORIES = ['add/sub', 'mul', 'div', 'paren']
 HOLDOUT_FRACTION = 0.1
 
 FORMAT_FILENAME = 'arithmetic_format.json'
+
+# Version of the train/held-out assignment, recorded with trained models. Version 1
+# hashed expressions as written, so b + a could be trained on while a + b was evaluated
+SPLIT_VERSION = 2
 
 
 def sample_problem(category: str, rng: random.Random) -> Tuple[str, int]:
@@ -43,9 +50,24 @@ def sample_problem(category: str, rng: random.Random) -> Tuple[str, int]:
     raise ValueError(f"Unknown category: {category}. Available: {CATEGORIES}")
 
 
+def canonical_expression(expression: str) -> str:
+    """The expression with commutative operands sorted: '7 + 3' -> '3 + 7', '(9 + 2) * 4' -> '(2 + 9) * 4'."""
+    match = re.fullmatch(r"(\d+) ([+*]) (\d+)", expression)
+    if match:
+        a, op, b = match.groups()
+        a, b = sorted((int(a), int(b)))
+        return f"{a} {op} {b}"
+    match = re.fullmatch(r"\((\d+) \+ (\d+)\) \* (\d+)", expression)
+    if match:
+        a, b, c = map(int, match.groups())
+        a, b = sorted((a, b))
+        return f"({a} + {b}) * {c}"
+    return expression
+
+
 def is_held_out(expression: str) -> bool:
-    """Deterministically assign an expression to the held-out (eval) pool."""
-    digest = hashlib.md5(expression.encode('utf-8')).digest()
+    """Deterministically assign an expression (and its commuted twins) to the held-out (eval) pool."""
+    digest = hashlib.md5(canonical_expression(expression).encode('utf-8')).digest()
     return int.from_bytes(digest[:8], 'big') / 2**64 < HOLDOUT_FRACTION
 
 
@@ -80,7 +102,8 @@ def save_format(output_dir: str, reverse: bool) -> None:
     """Record the answer format next to a trained model so evaluation can match it."""
     os.makedirs(output_dir, exist_ok=True)
     with open(os.path.join(output_dir, FORMAT_FILENAME), 'w') as f:
-        json.dump({'reverse_answers': reverse, 'holdout_fraction': HOLDOUT_FRACTION}, f, indent=2)
+        json.dump({'reverse_answers': reverse, 'holdout_fraction': HOLDOUT_FRACTION,
+                   'split_version': SPLIT_VERSION}, f, indent=2)
 
 
 def load_format(model_dir: str) -> dict:
