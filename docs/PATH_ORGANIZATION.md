@@ -114,21 +114,12 @@ model_dir = get_model_output_path("pretraining", "guac-3b")
 hf_cache = get_huggingface_cache_dir()
 ```
 
-## Updated Scripts
+## Who Uses It
 
-The following scripts have been updated to use the centralized path management:
-
-### Core Training Scripts
-- `guac/core/train_tokenizer.py` - Uses path manager for tokenizer outputs and temp directories
-- `guac/core/pipeline_utils.py` - Updated cache directory creation
-- `guac/pipeline/pretrain.py` - Uses path manager for model outputs and cache
-- `guac/pipeline/midtrain.py` - Uses path manager for model outputs and cache
-- `guac/pipeline/posttrain.py` - Uses path manager for model outputs and cache
-
-### Configuration Files
-- `site_config.yml` - Updated with new directory structure
-- `site_config.example.yml` - Updated example configuration
-- `Makefile` - Updated to use new directory structure
+- `guac/core/cache_utils.py` (`get_cache_directory`): tokenized-dataset caches
+- `guac/core/pipeline_utils.py` (`get_output_directory`): default output directories of the three stages
+- `guac/pipeline/pretrain.py` and `train_tokenizer.py`: the default tokenizer location
+- `guac/core/dataset_utils.py`: the `dataset_configs` section (Hugging Face datasets by name)
 
 ## Migration from Old Paths
 
@@ -147,17 +138,8 @@ However, it's recommended to migrate to the new organized structure.
 2. **Consistent Organization**: Logical hierarchy for all outputs
 3. **SCRATCH_DIR Integration**: Everything under configurable scratch directory
 4. **Variable Expansion**: Support for `${var}` references in paths
-5. **Automatic Directory Creation**: Directories created as needed
+5. **No Empty Directories**: getters only compute paths; a directory appears when something is saved there, so its existence means it has content (`get_temp_dir` and `ensure_dir_exists` do create directories)
 6. **Backward Compatibility**: Legacy paths still accessible
-
-## Environment Variables
-
-You can override the scratch directory using environment variables:
-
-```bash
-export GUAC_SCRATCH_DIR="/custom/scratch/path"
-# This will be used if scratch_dir is not explicitly set in site_config.yml
-```
 
 ## Cleanup
 
@@ -174,7 +156,7 @@ make clean          # Removes all outputs
 Test the path manager implementation:
 
 ```bash
-python test_path_manager.py
+python -m pytest tests/test_path_manager.py
 ```
 
 This will validate that all paths are correctly organized under `SCRATCH_DIR`.

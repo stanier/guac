@@ -112,12 +112,12 @@ make download-datasets DOWNLOAD_OUTPUT=/data/training
 
 ### Sample CSV Files
 
-**`datasets_download.csv`** (default):
+**`datasets_download.csv`** (default, shipped with the repository):
 ```csv
-# Guac training datasets
-HuggingFaceFW/fineweb,100MB,train,,jsonl
-HuggingFaceFW/fineweb-edu,100MB,train,,jsonl
-wikimedia/wikipedia,100MB,train,20231101.en,jsonl
+# Lines starting with # are skipped
+HuggingFaceFW/fineweb-edu,100MB,train,sample-10BT,jsonl
+Salesforce/wikitext,100%,validation,wikitext-103-raw-v1,jsonl
+tatsu-lab/alpaca,10K,train,,jsonl
 ```
 
 **`quick_test.csv`** (for testing):

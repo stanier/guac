@@ -31,10 +31,14 @@ Traditional Transformer:    Mixed Layer Architecture:
 
 ### Design Principles
 
-1. **Computational Complexity Progression**: Layers progress from simple to complex computations
-2. **Complementary Inductive Biases**: Each layer type captures different aspects of the data
-3. **Gradient Flow**: Careful ordering to maintain stable training dynamics
-4. **Memory Efficiency**: Strategic placement of memory-intensive layers
+1. **Only the mixer varies**: every layer type sits in the same pre-norm block with
+   the same FFN, so differences between them come from how they mix positions
+2. **Comparable budgets**: FFN widths can be set so every block has the same
+   parameters or FLOPs (`param_match`, `flop_match`)
+3. **Faithful mechanisms**: Mamba-2, BASED and MoH follow their papers, and each
+   is tested against a direct reference implementation
+4. **Measured, not assumed**: synthetic diagnostics and sweeps report what each
+   layer type contributes
 
 ## 🧱 Layer Type Specifications
 
@@ -264,29 +268,18 @@ only, so evaluation loss stays the language-modeling loss.
 
 ## 🔧 Configuration System
 
-### Architecture Selection
+### Layer Stacks
 
-Architectures are defined in `architecture_configs.yaml`:
+A model's layers are set per preset in `model_configs.yaml` (built by
+`build_model_config` in `guac/pipeline/pretrain.py`), or directly with
+`MixedLayerConfig`:
 
 ```yaml
-architectures:
-  mixed_layer:
-    config_class: "MixedLayerConfig"
-    model_class: "MixedLayerForCausalLM"
-    import_path: "guac.custom_architectures"
-
-architecture_defaults:
-  mixed_layer:
-    layer_types: [
-      "mlp_only",
-      "conv",
-      "conv",
-      "mamba2",
-      "based",
-      "mamba2",
-      "flash_attention",
-      "mlp_only"
-    ]
+layer_types: [conv, conv, mamba2, sliding_window_attention]   # one mixer per layer
+ffn_types: [swiglu, swiglu, none, moe]                        # optional, per layer
+ffn_hidden_sizes: [1365, 1365, 1365, 1365]                    # optional SwiGLU widths
+param_match: full_attention    # optional: size each FFN to a full_attention block's parameters
+# flop_match: full_attention   #   ...or to its FLOPs per token at max_sequence_length
 ```
 
 ### Layer Type Configuration
@@ -315,6 +308,20 @@ sliding_window_size: 64   # Positions each token sees, itself included
 # Convolutional parameters
 conv_kernel_size: 3       # 1D convolution kernel
 conv_groups: 1            # Depthwise grouping
+
+# Mixture-of-Head attention
+moh_top_k: 4              # Heads each token uses (default num_attention_heads // 2)
+
+# MoE FFN (ffn_types: moe, the default for shared_expert_moe layers)
+num_experts: 8            # Routed experts
+num_shared_experts: 1     # Always-active experts
+moe_top_k: 2              # Routed experts per token
+moe_load_balancing_weight: 0.01
+
+# Position encoding
+use_rope: true            # RoPE in the softmax-attention mixers
+rope_theta: 10000.0
+use_absolute_position_embeddings: false
 ```
 
 ## 📊 Performance Characteristics
@@ -342,18 +349,18 @@ conv_groups: 1            # Depthwise grouping
 
 ### Gradient Flow
 
-The mixed architecture is designed to maintain stable gradient flow:
-
-1. **Early Layers**: Simple operations provide stable gradients
-2. **Middle Layers**: Complex operations benefit from stable inputs
-3. **Late Layers**: High-capacity layers can fit complex patterns
-4. **Residual Connections**: All layers maintain skip connections
+Every layer is a pre-norm residual block, so each layer's output is added to
+an identity path and gradients reach every layer regardless of its mixer.
+Which orderings of layer types train best is an open question the sweep
+harness is for (`sweeps/README.md`).
 
 ### Numerical Stability
 
 - **Mamba-2**: the scan's exponentials and cumulative sums run in float32 even under
   mixed precision; decays are built from masked cumulative sums rather than
   differences of large running totals.
+- **BASED**: the Taylor feature map and the linear-attention sums run in float32;
+  the normalizer is at least 1/2 per key, so it never divides by zero.
 - **Attention**: softmax attention runs through `F.scaled_dot_product_attention`.
   Positions whose keys are all padding attend to themselves, so masked rows can't
   produce NaN.
@@ -367,12 +374,14 @@ The mixed architecture is designed to maintain stable gradient flow:
 To add a new layer type:
 
 1. **Implement the mixer** in `custom_architectures.py`: an `nn.Module` built
-   from the config whose `forward(hidden_states, attention_mask=None)` returns a
-   tensor of the same shape. No norm, residual or FFN; the block adds those.
+   from the config whose `forward(hidden_states, attention_mask=None, cache=None)`
+   returns a tensor of the same shape. No norm, residual or FFN; the block adds
+   those. Padding must not reach real tokens, and with a `cache` (generation)
+   the mixer stores the state it needs to continue (see `docs/CONTRIBUTING.md`).
 2. **Register it** in `MIXERS` and `SUPPORTED_LAYER_TYPES`
 3. **Update configuration** with new parameters
-4. **Test it**: the causality, padding and block-structure tests run over every
-   registered type automatically
+4. **Test it**: the causality, padding, block-structure and generation tests run
+   over every registered type automatically
 5. **Document** complexity and use cases
 
 ### Best Practices

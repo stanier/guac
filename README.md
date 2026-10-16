@@ -5,7 +5,7 @@ Guac is an experimental research codebase for training and experimenting with he
 ## Quick Start
 
 ### Prerequisites
-- Python 3.8+
+- Python 3.9+
 - PyTorch (CUDA-capable GPU recommended)
 - HuggingFace `transformers`
 
@@ -48,12 +48,12 @@ make stable  # guac-430m config
 
 ## Architecture Overview
 
-Guac introduces **Mixed Layer Architectures** - models that use different computational patterns within the same network. For example, the smaller presets in `model_configs.yaml` repeat a `conv, conv, mamba2, conv` block, while larger presets add mixture-of-experts and mixture-of-heads layers on top.
+Guac introduces **Mixed Layer Architectures** - models that use different computational patterns within the same network. Every layer is the same pre-norm block (`x + mixer(norm(x))`, then `x + ffn(norm(x))`) and only the mixer changes, so layer types can be compared fairly; FFN widths can be set to give every block the same parameters or FLOPs. The presets in `model_configs.yaml` repeat a `conv, conv, mamba2, conv` pattern; any other stack is a `layer_types` list away.
 
 ### Supported Layer Types
 Defined in `guac/core/custom_architectures.py`:
-- **`full_attention`**: Standard multi-head attention
-- **`flash_attention`**: Memory-efficient, tiling-based attention
+- **`full_attention`**: Grouped-query softmax attention with RoPE (FlashAttention kernels via PyTorch SDPA)
+- **`flash_attention`**: The same mixer as `full_attention` (kept for existing configs)
 - **`conv`**: 1D convolution for local pattern recognition
 - **`mamba2`**: Selective state space modeling
 - **`based`**: BASED linear attention (2nd-order Taylor feature map), fixed-size state
@@ -76,11 +76,11 @@ Defined in `guac/core/custom_architectures.py`:
 - Scalable model size progression: `guac-43m` (512 hidden, 4 layers) up through `guac-48b` (8192 hidden, 64 layers) — see the full table below
 - Environment-agnostic `site_config.yml`, resolved via `PathManager`
 
-### 4. **Advanced Training Features**
-- Gradient checkpointing for memory efficiency
-- Dataset caching for faster iteration
-- Live inference during training
-- Streaming dataset support
+### 4. **Training and Measurement**
+- Held-out validation perplexity, sequence packing, and a record of every run (`metrics.jsonl`, `run_info.json` with config, seed and git commit)
+- Synthetic diagnostics (associative recall, selective copying, induction, passkey retrieval) and a sweep harness that compares layer types at a matched budget in one table
+- Cached generation for every layer type (KV cache for attention, recurrent state for conv, Mamba-2 and BASED)
+- Gradient checkpointing, dataset caching, streaming datasets
 
 ## Documentation
 
@@ -145,7 +145,13 @@ make pipeline DEBUG=true
 make pretrain MAX_STEPS=50
 ```
 
-Pre-training datasets (`fineweb`, `fineweb-edu`, `finewiki`, plus `wikitext-103`/`openwebtext`) are resolved via the `pretraining_datasets` section of `site_config.yml`, so `DATASETS=` accepts any key defined there.
+Pre-training datasets are resolved via the `dataset_configs.pretraining_datasets` section of `site_config.yml` (the example defines `fineweb` and `fineweb-edu`), plus the built-in `wikitext-103` and `openwebtext` and paths to saved datasets, so `DATASETS=` accepts any of those.
+
+### Comparing Layer Types
+```bash
+make diagnostics DIAG_TASK=mqar LAYERS=conv,based,sliding_window_attention,based
+make sweep SPEC=sweeps/recall_small.yaml    # architectures x tasks at a matched budget -> results.md
+```
 
 ### Tokenizer & Dataset Preparation
 ```bash
@@ -168,4 +174,9 @@ Guac's mixed-layer architectures build on the following work:
 - Dao, T. & Gu, A. (2024). *Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality* (Mamba-2). arXiv:2405.21060.
 - Arora, S., Eyuboglu, S., Timalsina, A., Johnson, I., Poli, M., Zou, J., Rudra, A., & Ré, C. (2024). *Simple linear attention language models balance the recall-throughput tradeoff* (BASED). arXiv:2402.18668.
 - Dao, T., Fu, D. Y., Ermon, S., Rudra, A., & Ré, C. (2022). *FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness*. arXiv:2205.14135.
+- Arora, S. et al. (2023). *Zoology: Measuring and Improving Recall in Efficient Language Models* (MQAR). arXiv:2312.04927.
+- Gu, A. & Dao, T. (2023). *Mamba: Linear-Time Sequence Modeling with Selective State Spaces* (selective copying). arXiv:2312.00752.
+- Jin, P. et al. (2024). *MoH: Multi-Head Attention as Mixture-of-Head Attention*. arXiv:2410.11842.
+- Fedus, W., Zoph, B., & Shazeer, N. (2021). *Switch Transformers* (MoE load balancing). arXiv:2101.03961.
+- Su, J. et al. (2021). *RoFormer: Enhanced Transformer with Rotary Position Embedding*. arXiv:2104.09864.
 - Wolf, T. et al. (2020). *Transformers: State-of-the-Art Natural Language Processing* (HuggingFace `transformers`). arXiv:1910.03771.

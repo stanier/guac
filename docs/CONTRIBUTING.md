@@ -1,50 +1,38 @@
 # Contributing to Guac
 
-Welcome to Guac! This guide will help you contribute effectively to the project.
-
-## 🎯 Project Overview
-
-Guac is a research framework for mixed layer transformer architectures. Our primary goals are:
-
-1. **Novel Architecture Research**: Exploring heterogeneous transformer layers
-2. **Computational Efficiency**: Studying different computational patterns within single models
-3. **Sequence-to-Sequence Tasks**: Advanced prompt templating for complex tasks
-4. **Mathematical Reasoning**: Specialized arithmetic and symbolic computation capabilities
+Guac is a research framework for heterogeneous transformers: models whose
+layers use different mechanisms (attention, convolution, Mamba-2, BASED, ...).
+Contributions that make comparisons between layer types more faithful or
+easier to measure are especially welcome. `docs/ROADMAP.md` lists planned work.
 
 ## 🚀 Getting Started
 
-### Development Environment
-
-1. **Clone and Setup**:
 ```bash
-git clone <repository>
-cd guac
-pip install -r requirements.txt
-cp site_config.example.yml site_config.yml
-# Configure site_config.yml for your environment
+git clone <repository> && cd guac
+make install            # pip install -e ".[test]" and copies site_config.example.yml
+make test               # the CPU test suite (about 10 s; no GPU, network or data)
 ```
 
-2. **Test Installation**:
-```bash
-# Quick test with minimal model
-python scripts/training/pretrain/guac_general.py --model-config iota0
-```
+Then run the offline end-to-end smoke test in `docs/ROADMAP.md`, which trains
+the character-level `guac-13m-arith` preset through pre- and mid-training on CPU.
 
-### Code Structure
+### Code structure
 
 ```
 guac/
-├── scripts/training/           # Training workflows
-│   ├── pretrain/              # Pretraining scripts
-│   ├── custom_architectures.py # Mixed layer implementations
-│   ├── callbacks.py           # Training callbacks
-│   └── prompt_templates.py    # Templating system
-├── templates/                 # Jinja2 prompt templates
-├── docs/                      # Documentation
-├── model_configs.yaml         # Model configurations
-├── architecture_configs.yaml  # Architecture definitions
-└── site_config.yml           # Environment settings
+├── core/            # models (custom_architectures.py, mamba2.py, linear_attention.py),
+│                    # data, diagnostics, training utilities
+├── pipeline/        # command-line entry points: pretrain, midtrain, posttrain, sweep, ...
+└── tokenizer/       # tokenizer vocabulary pipeline
+tests/               # pytest suite (tests/README.md)
+sweeps/              # sweep specs (sweeps/README.md)
+templates/           # Jinja2 prompt templates
+scripts/             # standalone utilities (hf_partial_download.py, data scripts)
+model_configs.yaml   # presets
+site_config.yml      # paths and datasets for your machine (from site_config.example.yml)
 ```
+
+`guac/README.md` describes each module.
 
 ## 🧱 Adding New Layer Types
 
@@ -86,250 +74,60 @@ outputs: a diverging run should fail visibly.
 
 ### Design Guidelines
 
-1. **Computational Complexity**: Document O(·) complexity for sequence length L and hidden dimension d
-2. **Memory Usage**: Specify memory requirements and scaling behavior
-3. **Gradient Flow**: Ensure stable gradients through residual connections
+1. **Faithfulness**: Follow the paper's formulation, and test the mixer against a
+   direct reference (a quadratic form, a sequential recurrence, or a reference
+   implementation), as `test_based.py` and `test_mamba2.py` do
+2. **Complexity**: Document time and memory in sequence length L and hidden size d
+3. **Generation**: Keep a fixed-size state if the mechanism allows it
 4. **Numerical Stability**: Run scans, exponentials and long sums in float32 under mixed precision (see `mamba2.py`, `linear_attention.py`). Don't mask NaNs or clamp outputs
 5. **Documentation**: Include usage examples and parameter explanations
 
-## 📊 Model Configuration
+## 📊 Presets
 
-### Adding New Model Sizes
-
-Add to `model_configs.yaml`:
-
-```yaml
-model_training_configs:
-  my_size:
-    step_val: 100              # Evaluation frequency
-    hidden_size: 768           # Model dimension
-    num_hidden_layers: 12      # Number of layers
-    num_attention_heads: 12    # Attention heads
-    num_kv_heads: 4           # Key-value heads (GQA)
-    learning_rate: 1e-4       # Base learning rate
-    warmup_ratio: 0.1         # Warmup fraction
-    weight_decay: 0.01        # L2 regularization
-    pdbs_train: 8             # Per-device batch size
-    pdbs_eval: 8              # Evaluation batch size
-    grad_accum_steps: 2       # Gradient accumulation
-    num_train_epochs: 3       # Training epochs
-
-    # Layer type progression (optional)
-    layer_types: [
-      "mlp_only",
-      "conv",
-      "mamba2",
-      "flash_attention"
-    ]
-```
-
-### Configuration Best Practices
-
-1. **Memory Scaling**: Consider GPU memory constraints for your target size
-2. **Layer Progression**: Order from simple to complex computations
-3. **Attention Heads**: Ensure `num_kv_heads <= num_attention_heads`
-4. **Learning Rate**: Scale appropriately with model size
+Add a preset to `model_configs.yaml` under `model_training_configs`; it is
+merged over `defaults`. `docs/TRAINING.md` lists the keys. Name it after its
+parameter count (`print_parameter_breakdown`, or
+`python guac/pipeline/pretrain.py --print-params`), and
+`tests/test_model_configs.py` checks that every preset builds.
 
 ## 🎨 Prompt Templates
 
-### Creating Custom Templates
+Templates are Jinja2 files in `templates/` rendered by
+`guac.core.prompt_templates` (`apply_template_file(filename, context)`). They
+mark structure with explicit boundary tokens (FLAG tokens such as
+`<& THINK &>`, SERIAL start/end pairs) instead of turn markers; the tokens are
+defined in `FLAG_TOKEN_NAMES` and `SERIAL_TOKEN_NAMES` and added to every
+tokenizer as special tokens.
 
-1. **Template Structure**:
-```jinja2
-{# templates/my_task.jinja #}
-{{ FLAG_TOKEN }}TASK:{{ SERIAL_TOKEN }}{{ task_description }}{{ END_TASK_TOKEN }}
-{{ FLAG_TOKEN }}INPUT:{{ SERIAL_TOKEN }}{{ input_text }}{{ END_INPUT_TOKEN }}
-{{ FLAG_TOKEN }}OUTPUT:{{ SERIAL_TOKEN }}{{ output_text }}{{ END_OUTPUT_TOKEN }}
-```
+## 🧪 Experiments
 
-2. **Register Template**:
-```python
-# In prompt_templates.py
-TASK_TEMPLATES = {
-    "my_task": "templates/my_task.jinja",
-    # ... other templates
-}
-```
+- **Compare layer types with the diagnostics and sweeps** (`docs/TRAINING.md`,
+  `sweeps/README.md`), at a matched parameter or FLOP budget, over several seeds.
+- **Check a task is learnable before comparing on it**: attention should reach
+  near 100% on recall tasks at your settings. MQAR once leaked its answers into
+  the inputs, and every mixer scored 36% by elimination.
+- **Every run records itself**: `run_info.json` has the resolved config, seed
+  and git commit (with a dirty flag), so commit code before running.
 
-3. **Usage**:
-```bash
-python scripts/training/pretrain/guac_general.py \
-  --use-templates \
-  --template-file my_task.jinja \
-  --template-task "My custom task description"
-```
+## ✅ Before Submitting
 
-### Template Guidelines
+- [ ] `python -m pytest` passes, including new tests for the change
+- [ ] The smoke test in `docs/ROADMAP.md` still runs, for model or pipeline changes
+- [ ] Behavior changes are documented (`docs/ARCHITECTURE.md`, `docs/TRAINING.md`,
+      `CLAUDE.md`) and `docs/ROADMAP.md` is updated
+- [ ] Suspected bugs were reproduced, and each fix has the test that would have caught it
 
-1. **Token Usage**: Always use FLAG and SERIAL tokens for boundaries
-2. **Clear Structure**: Separate input/output sections clearly
-3. **Flexibility**: Support variable content lengths
-4. **Documentation**: Document expected input/output formats
+Write commit messages that say what changed and why, and keep one logical
+change per commit.
 
-## 🧪 Experiments and Research
+## 📚 References
 
-### Running Experiments
-
-1. **Systematic Naming**:
-```bash
-export EXP_NAME="mixed_arch_mamba2_$(date +%Y%m%d)"
-python scripts/training/pretrain/guac_general.py \
-  --model-config mixed \
-  --output-dir ./experiments/$EXP_NAME
-```
-
-2. **Configuration Tracking**:
-- Commit code changes before experiments
-- Document hyperparameter rationale
-- Save experiment configurations
-
-3. **Reproducibility**:
-```bash
-# Set seeds for reproducibility
-export PYTHONHASHSEED=42
-python scripts/training/pretrain/guac_general.py --seed 42
-```
-
-### Evaluation Guidelines
-
-1. **Baseline Comparisons**: Always compare against standard transformer
-2. **Ablation Studies**: Test individual layer type contributions
-3. **Scaling Analysis**: Test across multiple model sizes
-4. **Task-Specific Metrics**: Use appropriate evaluation for your use case
-
-## 🐛 Debugging and Testing
-
-### Common Issues
-
-**1. Numerical Instability**
-```bash
-# Symptoms: loss=0.0, grad_norm=NaN
-# Debug with minimal model
-python scripts/training/pretrain/guac_general.py --model-config iota0
-
-# Solutions:
-# - Reduce learning rate
-# - Check layer implementations for NaN sources
-# - Enable gradient clipping (already enabled by default)
-```
-
-**2. Memory Issues**
-```bash
-# Solutions:
-# - Reduce batch size: --model-config with lower pdbs_train
-# - Enable gradient checkpointing (enabled by default)
-# - Use fewer attention layers
-```
-
-**3. Layer Compatibility**
-```python
-# Ensure all layers output same shape
-assert output.shape == input.shape, f"Shape mismatch: {output.shape} != {input.shape}"
-```
-
-### Testing Checklist
-
-Before submitting changes:
-
-- [ ] Code runs without errors on `iota0` configuration
-- [ ] No NaN gradients or infinite losses
-- [ ] Memory usage is reasonable
-- [ ] Gradient checkpointing works
-- [ ] Generation methods function correctly
-- [ ] Documentation is updated
-
-## 📋 Submission Guidelines
-
-### Pull Request Process
-
-1. **Branch Naming**:
-```bash
-git checkout -b feature/layer-type-name
-git checkout -b fix/numerical-stability
-git checkout -b docs/architecture-update
-```
-
-2. **Commit Messages**:
-```
-Add Mamba-2 layer implementation
-
-- Implement selective state space model
-- Add numerical stability measures
-- Update architecture configuration
-- Add performance documentation
-```
-
-3. **PR Description Template**:
-```markdown
-## Summary
-Brief description of changes
-
-## Changes
-- [ ] New layer implementation
-- [ ] Configuration updates
-- [ ] Documentation updates
-- [ ] Bug fixes
-
-## Testing
-- [ ] Tested on iota0 configuration
-- [ ] No numerical stability issues
-- [ ] Memory usage reasonable
-
-## Performance
-| Layer Type | Complexity | Memory | Notes |
-|------------|------------|---------|-------|
-| New Layer  | O(...)     | O(...)  | ...   |
-```
-
-### Code Style
-
-1. **Python Style**:
-- Follow PEP 8
-- Use type hints where helpful
-- Document complex functions
-- Avoid deep nesting
-
-2. **Configuration Style**:
-- Use descriptive parameter names
-- Add comments for non-obvious settings
-- Maintain backwards compatibility
-
-3. **Documentation Style**:
-- Use clear, technical language
-- Include code examples
-- Provide performance characteristics
-- Add troubleshooting sections
-
-## 🤝 Community
-
-### Getting Help
-
-1. **Documentation**: Check existing docs first
-2. **Issues**: Search existing issues before creating new ones
-3. **Discussions**: Use for questions and ideas
-4. **Code Review**: Request reviews for significant changes
-
-### Research Collaboration
-
-We encourage:
-- **Novel Architecture Ideas**: New layer types and combinations
-- **Efficiency Improvements**: Better computational patterns
-- **Task Applications**: New use cases for mixed architectures
-- **Evaluation Methods**: Better ways to assess mixed models
-
-## 📚 Resources
-
-### Essential Reading
-
-1. **Mamba-2**: Structured State Space Models
-2. **BASED**: Bidirectional Attention with Sparse Efficient Decoding
-3. **Flash Attention**: Memory-efficient attention computation
-4. **Grouped Query Attention**: Efficient attention with fewer KV heads
-
-### Implementation References
-
-- **HuggingFace Transformers**: Model implementation patterns
-- **PyTorch**: Tensor operations and autograd
-- **Jinja2**: Template syntax and features
-
-This guide should help you contribute effectively to Guac. For specific questions, please open an issue or start a discussion!
+- Mamba-2: Dao & Gu (2024), *Transformers are SSMs: Generalized Models and
+  Efficient Algorithms Through Structured State Space Duality*
+- BASED: Arora et al. (2024), *Simple linear attention language models balance
+  the recall-throughput tradeoff*
+- MQAR: Arora et al. (2023), *Zoology: Measuring and Improving Recall in
+  Efficient Language Models*
+- MoH: Jin et al. (2024), *MoH: Multi-Head Attention as Mixture-of-Head Attention*
+- Switch Transformers: Fedus et al. (2021), for the MoE load-balancing loss
+- RoPE: Su et al. (2021), *RoFormer*

@@ -1,106 +1,32 @@
-# Guac Training Directory Structure
-
-This directory contains all training-related scripts organized into logical subdirectories.
-
-## Directory Structure
+# The `guac` package
 
 ```
-scripts/training/
-├── core/                    # Core modules (shared across all training stages)
-│   ├── callbacks.py         # Training callbacks (progress, profiling, etc.)
-│   ├── custom_architectures.py  # Guac model architectures (MixedLayer, MoE, etc.)
-│   ├── prompt_templates.py  # Prompt template utilities
-│   └── train_tokenizer.py   # Tokenizer training utilities
-├── pipeline/                # Three-stage training pipeline (main scripts)
-│   ├── pretrain.py          # Stage 1: Foundation language modeling
-│   ├── midtrain.py          # Stage 2: Task specialization
-│   ├── posttrain.py         # Stage 3: Instruction tuning/alignment
-│   └── README.md            # Pipeline documentation
-├── legacy/                  # Legacy/experimental scripts
-│   ├── guac_arithmetic.py   # Old arithmetic training
-│   ├── guac_general.py      # Old general training
-│   ├── profile_training.py  # Training profiling tools
-│   ├── sentencepiece_tokenizer.py  # Legacy tokenizer
-│   ├── train_sentencepiece.py      # Legacy SP trainer
-│   └── train_with_sentencepiece.py # Legacy training script
-└── finetune/               # Specialized fine-tuning scripts
-    └── train_guac0.py      # Guac v0 fine-tuning
+guac/
+├── core/                       # Models and shared training code
+│   ├── custom_architectures.py # MixedLayerConfig, the mixers, the shared block, MixedLayerForCausalLM,
+│   │                           #   cached generation, parameter/FLOP matching
+│   ├── mamba2.py               # Mamba-2 mixer and chunked SSD scan (optional mamba_ssm kernel)
+│   ├── linear_attention.py     # BASED's Taylor feature map and chunked causal linear attention
+│   ├── diagnostics.py          # Synthetic tasks (MQAR, selective copying, induction, passkey) and a small training loop
+│   ├── arithmetic.py           # Arithmetic problems, the train/held-out split, accuracy evaluation
+│   ├── dataset_utils.py        # Pre-training data: validation splits, packing, tokenization cache
+│   ├── cache_utils.py          # Cache keys and cache directories
+│   ├── pipeline_utils.py       # Presets, model loading, TrainingArguments, metrics and run records
+│   ├── callbacks.py            # Progress bar with live samples, profiling, layer timing
+│   ├── path_manager.py         # Output paths from site_config.yml
+│   └── prompt_templates.py     # Special tokens and Jinja2 prompt templates
+├── pipeline/                   # Command-line entry points (see pipeline/README.md)
+│   ├── pretrain.py, midtrain.py, posttrain.py
+│   ├── eval_arithmetic.py
+│   ├── run_diagnostics.py, sweep.py
+│   └── train_tokenizer.py, tokenize_datasets.py
+└── tokenizer/                  # Hierarchical tokenizer vocabulary pipeline and the character tokenizer
 ```
 
-## Core Modules
+Imports are plain: `from guac.core.custom_architectures import MixedLayerForCausalLM`.
+`make install` (`pip install -e ".[test]"`) installs the package; the scripts
+in `pipeline/` also run directly (`python guac/pipeline/pretrain.py ...`),
+since they add the repository root to `sys.path`.
 
-### `core/custom_architectures.py`
-- **MixedLayerForCausalLM**: Main Guac model class
-- **MixedLayerConfig**: Configuration for mixed architectures
-- Supports: Mamba2, BASED, Conv1D, Attention, MoE, MoH
-- Modern features: RMSNorm, Flash Attention 2, Gradient Checkpointing
-
-### `core/callbacks.py`
-- **CustomProgressCallback**: Enhanced progress tracking
-- **ProfilingCallback**: Memory and performance profiling
-- **LayerTimingCallback**: Per-layer timing analysis
-
-### `core/train_tokenizer.py`
-- SentencePiece tokenizer training
-- Automatic special token integration
-- Character-level fallback support
-
-## Pipeline Scripts
-
-### Three-Stage Training Pipeline
-
-1. **`pipeline/pretrain.py`** - Foundation Language Modeling
-   - Large-scale language data (WikiText-103, OpenWebText)
-   - Basic language understanding and generation
-   - No evaluation (for speed)
-
-2. **`pipeline/midtrain.py`** - Task Specialization
-   - Arithmetic, code, reasoning tasks
-   - Domain-specific knowledge acquisition
-   - Specialized datasets
-
-3. **`pipeline/posttrain.py`** - Instruction Tuning & Alignment
-   - Instruction following
-   - Conversational capabilities
-   - Safety and helpfulness alignment
-
-## Usage
-
-### Quick Start
-```bash
-# Complete pipeline
-make pipeline
-
-# Individual stages
-make pretrain CONFIG=guac-3b
-make midtrain TASK=arithmetic
-make posttrain MODE=instruction
-
-# Debug mode
-make pipeline-debug
-```
-
-### Configuration
-- Model configs: `model_configs.yaml`
-- Architecture configs: `architecture_configs.yaml`
-- Site config: `site_config.yml`
-
-### Features
-- **Dataset caching**: Automatic tokenized dataset caching
-- **Memory optimization**: 1080 Ti compatible settings
-- **Modern architecture**: Mixed layers, MoE, Flash Attention
-- **Flexible configuration**: YAML-based model configs
-
-## Import Structure
-
-All scripts use robust import fallbacks:
-```python
-try:
-    from guac.core.custom_architectures import MixedLayerForCausalLM
-except ImportError:
-    from ..core.custom_architectures import MixedLayerForCausalLM
-except ImportError:
-    from core.custom_architectures import MixedLayerForCausalLM
-```
-
-This ensures scripts work when run directly or as modules.
+The model is described in `docs/ARCHITECTURE.md`, its API in `docs/API.md`,
+and training in `docs/TRAINING.md`.

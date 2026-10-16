@@ -1,166 +1,67 @@
 # Guac Training Guide
 
-This guide covers training workflows, best practices, and troubleshooting for Guac models.
+How to train Guac models: the three-stage pipeline, presets, data, and the
+experiment tools. `guac/pipeline/README.md` lists every script's options.
 
-## 🚀 Quick Start Training
-
-### Basic Commands
-
-```bash
-# Train with default mixed architecture
-python scripts/training/pretrain/guac_general.py
-
-# Train with specific model size
-python scripts/training/pretrain/guac_general.py --model-config mixed
-
-# Train arithmetic models
-python scripts/training/pretrain/guac_arithmetic.py --config guac-3b
-```
-
-### Command Line Options
+## 🚀 Quick Start
 
 ```bash
-# Dataset control
---datasets wikitext-103,fineweb-edu   # Specify datasets
---force-retokenize                    # Ignore cached tokenized datasets
---no-cache                           # Disable dataset caching entirely
-
-# Model configuration
---model-config mixed                  # Use specific model config
---architecture mixed_layer            # Override architecture
---vocab-size 2000                    # Set tokenizer vocabulary size
-
-# Template control
---use-templates                       # Enable prompt templates
---no-templates                       # Disable templates (default for pretraining)
---template-file custom.jinja          # Use custom template
---template-task "Custom task desc"    # Override task description
-
-# Tokenizer options
---tokenizer-type character            # Character vs BPE tokenization
---load-tokenizer char_arithmetic      # Load pre-trained tokenizer
---tokenizer-path /path/to/tokenizer   # Explicit tokenizer path
+make install                              # pip install -e ".[test]"
+make train-tokenizer                      # 60k SentencePiece tokenizer (downloads data)
+make pipeline CONFIG=guac-43m MAX_STEPS=2000   # pre -> mid -> post training
+make help                                 # every target and variable
 ```
 
-## 📊 Model Configurations
+Without network access or a trained tokenizer, the offline smoke test in
+`docs/ROADMAP.md` runs the character-level `guac-13m-arith` preset end to end
+on CPU in about a minute.
 
-### Pre-defined Sizes
+### The three stages
 
-| Config      | Use Case              | Hidden Size | Layers | Parameters | Memory   |
-|-------------|-----------------------|-------------|--------|------------|----------|
-| `iota0`     | Debugging             | 256         | 1      | ~65K       | <1GB     |
-| `iota`      | Small experiments     | 256         | 16     | ~2M        | ~2GB     |
-| `guac-3b`      | Development           | 384         | 18     | ~8M        | ~4GB     |
-| `guac-4.5b`     | Small models          | 768         | 22     | ~25M       | ~8GB     |
-| `guac-6.5b`     | Medium experiments    | 896         | 21     | ~40M       | ~12GB    |
-| `mixed`     | Mixed architecture    | 512         | 8      | ~48M       | ~6GB     |
-| `centi`     | Production small      | 1536        | 28     | ~180M      | ~16GB    |
-| `guac-9b`      | Production medium     | 2560        | 36     | ~1.3B      | ~24GB    |
-| `chungus`   | Large scale           | 8192        | 80     | ~65B       | >80GB    |
+| Stage | Command | Data | Output (`scratch/models/...`) |
+|-------|---------|------|-------------------------------|
+| Pre-training | `make pretrain` / `guac/pipeline/pretrain.py` | `DATASETS` (default `fineweb`; see below) | `pretraining/<config>` |
+| Mid-training | `make midtrain TASK=arithmetic` / `midtrain.py` | arithmetic (generated), code (codeparrot-clean-valid), reasoning (GSM8K), or `--datasets` | `midtraining/<config>_<task>` |
+| Post-training | `make posttrain MODE=instruction` / `posttrain.py` | alpaca (instruction) or ultrachat (sft), or `--datasets`; loss on responses only | `posttraining/<config>_<task>_<mode>` |
 
-### Custom Configuration
+Useful make variables: `CONFIG`, `DATASETS`, `MAX_STEPS`, `TASK`, `MODE`,
+`DEBUG=true` (small data subsets), `FORCE_RETOKENIZE=true`, and
+`PRETRAIN_ARGS="--batch-size 8 --grad-accum 4"` for any other pretrain flag.
 
-Add custom configs to `model_configs.yaml`:
+## 📊 Presets (`model_configs.yaml`)
+
+A preset merges `defaults` with its own entry, and is named after its size
+(`README.md` lists all of them with parameter counts). Former names such as
+`guac-106m` still work through `preset_aliases`. The training settings are
+used as given:
 
 ```yaml
 model_training_configs:
-  my_custom:
-    step_val: 100
-    hidden_size: 640
-    num_hidden_layers: 12
-    num_attention_heads: 10
-    num_kv_heads: 5
-    learning_rate: 1e-4
+  my-model:
+    hidden_size: 512
+    num_hidden_layers: 4
+    num_attention_heads: 4
+    num_kv_heads: 1
+    layer_types: [conv, conv, mamba2, sliding_window_attention]
+    # Optional: per-layer FFN types/widths, or a budget that sizes them
+    # ffn_types: [swiglu, swiglu, none, moe]
+    # param_match: full_attention        # or flop_match: full_attention
+    learning_rate: 1e-3
     warmup_ratio: 0.1
-    weight_decay: 0.01
-    pdbs_train: 16          # Per-device batch size
-    pdbs_eval: 16
-    grad_accum_steps: 4
-    num_train_epochs: 3
+    weight_decay: 0.1
+    pdbs_train: 32           # per-device batch size
+    pdbs_eval: 32
+    grad_accum_steps: 1
+    max_sequence_length: 512
+    max_steps: 20000         # or num_train_epochs (map-style datasets only)
 ```
 
-## 🗂️ Dataset Management
+Command-line flags override presets for one run (`--batch-size`,
+`--grad-accum`, `--max-steps`, `--seed`, ...). Every layer-type setting below
+(`mamba_*`, `based_*`, `conv_*`, `sliding_window_*`, `moe_*`, `moh_*`,
+position encoding) can be set in a preset.
 
-### Supported Datasets
-
-**HuggingFace Datasets** (configured in `site_config.yml`):
-- `fineweb-edu`: Educational web content (high-quality subset)
-- `wikitext-103`: Wikipedia articles (clean, structured text)
-- `openwebtext`: Web crawl data (diverse internet content)
-- Custom datasets via configuration
-
-**Fine-tuning Datasets**:
-- `Alpaca`: 52k instruction-following examples (SFT)
-- `OpenOrca`: 2.91M instruction examples with system prompts
-- `Capybara`: 16k conversational examples
-
-**Local Datasets**:
-- Arithmetic: Generated via `gen_arithm.py`
-- Custom: Place in configured dataset directories
-
-### Dataset Caching
-
-Guac automatically caches tokenized datasets:
-
-```bash
-# Cache locations (configurable in site_config.yml)
-./tokenized_wikitext-103_vocab_1000_no_templates/
-./tokenized_fineweb-edu_vocab_1000_templates_default/
-./tokenized_combined_vocab_1000_no_templates/
-```
-
-**Cache Management**:
-```bash
-# Force re-tokenization
-python scripts/training/pretrain/guac_general.py --force-retokenize
-
-# Disable caching
-python scripts/training/pretrain/guac_general.py --no-cache
-
-# Clean cache manually
-rm -rf ./tokenized_*
-```
-
-### Adding Custom Datasets
-
-1. **Configure in site_config.yml**:
-```yaml
-dataset_configs:
-  pretraining_datasets:
-    my_dataset:
-      dataset_name: "username/dataset-name"
-      config_name: "default"
-      streaming: false
-      max_articles: 10000
-```
-
-2. **Use in training**:
-```bash
-python scripts/training/pretrain/guac_general.py --datasets my_dataset
-```
-
-## 🔧 Architecture Configuration
-
-### Mixed Layer Setup
-
-Configure layer types in `architecture_configs.yaml`:
-
-```yaml
-architecture_defaults:
-  mixed_layer:
-    layer_types: [
-      "mlp_only",        # Layer 1: Simple
-      "conv",            # Layer 2: Local
-      "conv",            # Layer 3: More local
-      "mamba2",          # Layer 4: State space
-      "based",           # Layer 5: Efficient attention
-      "mamba2",          # Layer 6: More state space
-      "flash_attention", # Layer 7: Full attention
-      "mlp_only"         # Layer 8: Final processing
-    ]
-```
-
-### Layer Type Parameters
+### Layer type settings
 
 ```yaml
 # Mamba-2 configuration
@@ -196,50 +97,24 @@ tie_word_embeddings: true  # Share the token embedding matrix with lm_head
 
 All softmax-attention layers (`full_attention`, `flash_attention`, `sliding_window_attention`, `moh_attention`) are always causal and run through PyTorch's `F.scaled_dot_product_attention`, which uses FlashAttention kernels on supported GPUs and dtypes. The separate `flash-attn` package is not used.
 
-## 🎯 Training Best Practices
+## 🗂️ Data
 
-### Memory Optimization
+### Pre-training datasets
 
-1. **Gradient Checkpointing**: Enabled by default in training scripts
-2. **Mixed Precision**: Use FP16 training
-3. **Batch Size Tuning**: Reduce batch size for longer sequences
-4. **Layer Ordering**: Memory-intensive layers later in stack
+`--datasets` (make `DATASETS=`) takes a comma-separated list of:
 
-### Numerical Stability
+- names defined under `dataset_configs.pretraining_datasets` in
+  `site_config.yml` (copy `site_config.example.yml`, which defines `fineweb` and
+  `fineweb-edu`). Each sets the Hugging Face id, config, `streaming`,
+  `max_articles` and `text_field`. Streaming datasets have no length, so they
+  need `--max-steps`.
+- the built-in `wikitext-103` and `openwebtext`
+- a path to a dataset saved with `save_to_disk` (a `DatasetDict` with a
+  `validation` split uses it)
 
-**Monitor for Issues**:
-- Loss = 0.0 (model collapse)
-- grad_norm = NaN (exploding gradients)
-- Loss spikes (instability)
-
-**Solutions**:
-```bash
-# Reduce learning rate
---learning-rate 1e-5
-
-# Increase gradient clipping
-# (configured in training script: max_grad_norm: 1.0)
-
-# Use more stable layer arrangements
-layer_types: ["mlp_only", "conv", "full_attention", "mlp_only"]
-```
-
-### Hyperparameter Guidelines
-
-**Learning Rate**:
-- Small models (< 10M): 1e-3 to 1e-4
-- Medium models (10M-100M): 1e-4 to 5e-5
-- Large models (> 100M): 1e-4 to 1e-5
-
-**Batch Size**:
-- Start with largest that fits in memory
-- Use gradient accumulation for effective larger batches
-- Mixed architectures may need smaller batches
-
-**Warmup**:
-- 5-10% of total steps for small models
-- 1-5% for larger models
-- Mixed architectures benefit from longer warmup
+An unknown name is an error. To download part of a dataset ahead of time,
+see `docs/DATASET_DOWNLOAD.md` (`make download-datasets` reads
+`datasets_download.csv`).
 
 ## 📈 Data, Evaluation and Run Records
 
@@ -305,121 +180,35 @@ reference block.
 
 ## 🛠️ Troubleshooting
 
-### Common Issues
+**Loss becomes NaN or diverges.** Nothing in the model masks NaNs, so a
+diverging run fails visibly. Lower `learning_rate`, lengthen warmup, keep
+`max_grad_norm: 1.0`, and check whether one layer type is responsible by
+training a small model of only that type (`make diagnostics`). Mamba-2 and
+BASED compute their scans in float32 under mixed precision.
 
-**1. Loss = 0.0, grad_norm = NaN**
-```bash
-# Symptoms: Model produces zeros, gradients explode
-# Causes: Numerical instability in custom layers
+**Out of memory.** Reduce `pdbs_train` (or `--batch-size`) and raise
+`grad_accum_steps` to keep the effective batch, or shorten
+`max_sequence_length`. Pre-training uses gradient checkpointing by default.
+`--print-mem` reports parameter, gradient, optimizer-state and activation
+memory after the first step. Several large presets' batch sizes don't fit
+on one GPU as written.
 
-# Solutions:
-# - Reduce learning rate
-# - Check Mamba-2 parameters (d_state, expand factor)
-# - Use simpler layer arrangement initially
-# - Enable gradient clipping
-```
+**Slow training.** Softmax attention uses FlashAttention kernels through
+`F.scaled_dot_product_attention` on supported GPUs. For long Mamba-2
+sequences, try `mamba_scan_impl: mamba_ssm` (CUDA, `pip install -e ".[kernels]"`)
+or a larger `mamba_chunk_size`. `--enable-profiling` adds timing callbacks.
 
-**2. Out of Memory (OOM)**
-```bash
-# Solutions:
-# - Reduce batch size: pdbs_train and pdbs_eval
-# - Increase gradient accumulation: grad_accum_steps
-# - Enable gradient checkpointing (default)
-# - Use fewer attention layers
-# - Reduce sequence length
-```
+**Poor results.** Evaluate on held-out data rather than training loss:
+pre-training reports validation perplexity, mid-training held-out arithmetic
+accuracy (`make eval-arithmetic`), and the diagnostics isolate single abilities.
 
-**3. Very Slow Training**
-```bash
-# Solutions:
-# - Check if Flash Attention is installed
-# - Reduce sequence length
-# - Use fewer complex layers (Mamba-2, BASED)
-# - Enable dataset caching (default)
-```
+## 🔄 Other Workflows
 
-**4. Poor Convergence**
-```bash
-# Solutions:
-# - Increase learning rate gradually
-# - Extend warmup period
-# - Check data quality and preprocessing
-# - Try simpler architecture first
-```
+**Multiple GPUs.** The stage scripts use the Hugging Face Trainer, so
+`torchrun --nproc_per_node=4 guac/pipeline/pretrain.py --model-config ...`
+runs data-parallel training. `docs/SLURM.md` covers cluster jobs.
 
-### Debug Mode
+**Resuming.** Pass `--resume-from-checkpoint scratch/models/pretraining/<config>/checkpoint-N`.
 
-For debugging, use minimal configurations:
-
-```bash
-# Tiny model for debugging
-python scripts/training/pretrain/guac_general.py --model-config iota0
-
-# Simple architecture
-# Temporarily modify architecture_configs.yaml:
-layer_types: ["mlp_only", "full_attention", "mlp_only"]
-```
-
-### Performance Profiling
-
-```python
-# Add to training script for profiling
-import torch.profiler
-
-with torch.profiler.profile(
-    activities=[torch.profiler.ProfilerActivity.CPU,
-                torch.profiler.ProfilerActivity.CUDA],
-    schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
-    on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/profiler')
-) as prof:
-    # Training step
-    trainer.train()
-```
-
-## 🔄 Advanced Workflows
-
-### Multi-GPU Training
-
-```bash
-# Data parallel (multiple GPUs)
-CUDA_VISIBLE_DEVICES=0,1,2,3 python -m torch.distributed.launch \
-  --nproc_per_node=4 scripts/training/pretrain/guac_general.py
-
-# Model parallel (for very large models)
-# Configure in training script: device_map="auto"
-```
-
-### Resuming Training
-
-```bash
-# Training automatically resumes from last checkpoint in output_dir
-python scripts/training/pretrain/guac_general.py --model-config mixed
-```
-
-### Fine-tuning
-
-```bash
-# Load pre-trained model for fine-tuning
-python scripts/training/finetune/train_guac0.py \
-  --model-path /path/to/checkpoint \
-  --task-specific-config
-```
-
-### Experiment Management
-
-**Organized Experiments**:
-```bash
-# Use descriptive output directories
-export EXPERIMENT="mixed_arch_v1_$(date +%Y%m%d)"
-python scripts/training/pretrain/guac_general.py \
-  --model-config mixed \
-  --datasets wikitext-103 \
-  --output-dir ./experiments/$EXPERIMENT
-```
-
-**Version Control**:
-- Commit code changes before experiments
-- Tag successful experiment checkpoints
-- Document hyperparameter changes
-
-This guide should get you started with Guac training. For specific issues or advanced use cases, refer to the API documentation or open an issue on the repository.
+**Reproducing a run.** `run_info.json` in the output directory has the
+resolved config, command line, seed and git commit.

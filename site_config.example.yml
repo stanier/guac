@@ -92,6 +92,31 @@ environment:
 #   # Temporary directory for large operations
 #   temp_dir: "/tmp/guac"
 
+# Hugging Face datasets, by the names pretrain.py --datasets (and make DATASETS=)
+# and hf_partial_download.py --from-site-config use. Keys: dataset_name (hub id),
+# config_name, streaming, max_articles (documents used for training; the
+# validation_docs hold-out comes off the front first), text_field (default text).
+# wikitext-103 and openwebtext are built in, and a path to a saved dataset works too.
+dataset_configs:
+  pretraining_datasets:
+    fineweb:
+      dataset_name: "HuggingFaceFW/fineweb"
+      config_name: "sample-10BT"
+      streaming: true          # streaming datasets need --max-steps (MAX_STEPS=)
+      max_articles: 1000000
+    fineweb-edu:
+      dataset_name: "HuggingFaceFW/fineweb-edu"
+      config_name: "sample-10BT"
+      streaming: true
+      max_articles: 1000000
+  instruction_datasets:
+    openorca:
+      dataset_name: "Open-Orca/OpenOrca"
+      max_articles: 100000
+    alpaca:
+      dataset_name: "tatsu-lab/alpaca"
+      max_articles: 52002
+
 # Override settings for different deployment modes
 deployment:
   mode: "development"  # development, staging, production

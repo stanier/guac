@@ -20,18 +20,23 @@ python -m pytest -k causality                  # tests matching a name
 | `test_position_encoding.py` | RoPE (relative, norm-preserving, gives attention token order), the optional absolute table, former preset names, renamed presets within 10% of their names |
 | `test_mamba2.py` | Chunked SSD scan against the sequential recurrence (values and gradients), chunk-size invariance, agreement with transformers' reference `Mamba2Mixer`, initialization ranges |
 | `test_causality.py` | Every layer type is causal: perturbing position t never changes outputs before t |
-| `test_model_configs.py` | Every preset in `model_configs.yaml` builds a valid model config; pretraining uses the config's batch/step settings as given |
-| `test_cache_keys.py` | Tokenized-dataset cache keys change with the tokenizer, dataset settings, sequence length and debug subset |
-| `test_block_structure.py` | Every layer type is the same pre-norm mixer + FFN block; per-layer FFN types and widths; parameter matching |
+| `test_model_configs.py` | Every preset in `model_configs.yaml` builds a valid model config; settings pass through to the model; scientific notation reads as numbers; pretraining uses the config's batch/step settings as given; shared TrainingArguments conventions; midtraining text tasks |
+| `test_cache_keys.py` | Tokenized-dataset cache keys change with the tokenizer, dataset settings, sequence length, split, packing, hold-out size and debug subset |
+| `test_pretraining_data.py` | Validation hold-outs (seeded, streaming, on-disk splits), packing keeps every token, the packed collator keeps EOS in the loss, perplexity in logs and `metrics.jsonl`, `run_info.json` |
+| `test_block_structure.py` | Every layer type is the same pre-norm mixer + FFN block; per-layer FFN types and widths; parameter and FLOP matching; FLOP counts against a hand count |
 | `test_based.py` | BASED: Taylor feature map, chunked linear attention against the quadratic form (values, gradients, carried state); sliding-window attention against a banded mask |
 | `test_moh.py` | Mixture-of-Head attention: with all heads at equal gates it is multi-head attention, unselected heads contribute nothing |
 | `test_moe.py` | MoE: vectorized dispatch against a per-token loop, the Switch load-balancing loss (formula, router gradient, padding), added to the training loss only, under gradient checkpointing too |
-| `test_path_manager.py` | All generated paths resolve under `SCRATCH_DIR` |
+| `test_diagnostics.py` | Each synthetic task's answers follow its rule (MQAR never shows an answer in the input), accuracy counts only labeled positions, the training loops run |
+| `test_sweep.py` | Sweep specs are validated, budgets reach every architecture, results land in one table, an interrupted sweep resumes |
+| `test_posttrain.py` | Alpaca, Dolly and conversation records format; loss covers only responses and assistant turns; truncation |
+| `test_arithmetic.py` | The train/held-out split keeps commuted twins (`a + b`, `b + a`) in the same pool |
+| `test_path_manager.py` | All generated paths resolve under `SCRATCH_DIR`; getters don't create directories |
 | `test_vocab_pipeline.py` | Tokenizer vocab spec loading, validation and partition deduplication |
 
 ## Configuration
 
-Tests use `site_config.yml`, falling back to `site_config.example.yml` (with a warning) when it doesn't exist, as in CI. `test_path_manager.py` creates empty directories under the configured scratch directory.
+Tests use `site_config.yml`, falling back to `site_config.example.yml` (with a warning) when it doesn't exist, as in CI. `test_path_manager.py` creates temp directories under the configured scratch directory; everything else writes to pytest's `tmp_path`. One test (`test_kernel_scan_matches_torch_scan`) needs a CUDA GPU and `mamba_ssm`, and is skipped otherwise.
 
 ## Adding Tests
 
