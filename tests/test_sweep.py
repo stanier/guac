@@ -1,6 +1,7 @@
 """
 Tests for the sweep harness: specs are validated, budgets reach the model
-config, results land in one table, and an interrupted sweep resumes.
+config, results land in one table, an interrupted sweep resumes, and rows
+whose settings no longer match the spec are rerun rather than reused.
 """
 
 import json
@@ -61,6 +62,108 @@ def test_sweep_resumes_without_rerunning_finished_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(sweep, 'run_one', fail)
     run_sweep(monkeypatch, spec_path, tmp_path / "out")
     assert (tmp_path / "out" / "results.jsonl").read_text() == before
+
+
+def read_rows(output_dir):
+    return [json.loads(line) for line in (output_dir / "results.jsonl").read_text().splitlines()]
+
+
+def count_runs(monkeypatch):
+    """Patch run_one to count the runs it is asked for, still running them."""
+    calls = []
+    real_run_one = sweep.run_one
+
+    def counting(spec, arch_name, task, seed, lm_data):
+        calls.append((arch_name, sweep.task_name(task), seed))
+        return real_run_one(spec, arch_name, task, seed, lm_data)
+
+    monkeypatch.setattr(sweep, 'run_one', counting)
+    return calls
+
+
+def test_editing_the_spec_reruns_what_changed_and_ignores_stale_rows(tmp_path, monkeypatch, capsys):
+    """Rows were keyed by (architecture, task name, seed), so a rerun after changing steps reused stale results."""
+    spec_path = write_spec(tmp_path)
+    run_sweep(monkeypatch, spec_path, tmp_path / "out")
+    edited = {**SPEC, 'tasks': [{**SPEC['tasks'][0], 'steps': 4}]}
+    write_spec(tmp_path, edited)
+    calls = count_runs(monkeypatch)
+    capsys.readouterr()
+    run_sweep(monkeypatch, spec_path, tmp_path / "out")
+    assert len(calls) == 4
+    assert "ignoring 4 of 4 results rows" in capsys.readouterr().out
+
+    rows = read_rows(tmp_path / "out")
+    assert [r['steps'] for r in rows] == [3] * 4 + [4] * 4
+    current, stale = sweep.current_rows(edited, rows)
+    assert stale == 4 and sorted(r['steps'] for r in current) == [4] * 4
+
+    # The table holds the new runs only, and --summarize reports the stale ones
+    run_sweep(monkeypatch, spec_path, tmp_path / "out", '--summarize')
+    assert "ignoring 4 of 8 results rows" in capsys.readouterr().out
+    csv_rows = (tmp_path / "out" / "results.csv").read_text().splitlines()
+    new_mean = sum(r['example_accuracy'] for r in current if r['architecture'] == 'attention') / 2
+    assert float(csv_rows[1].split(',')[-1]) == pytest.approx(new_mean)
+
+
+def test_adding_a_seed_runs_only_the_new_runs(tmp_path, monkeypatch):
+    spec_path = write_spec(tmp_path)
+    run_sweep(monkeypatch, spec_path, tmp_path / "out")
+    write_spec(tmp_path, {**SPEC, 'seeds': [0, 1, 2]})
+    calls = count_runs(monkeypatch)
+    run_sweep(monkeypatch, spec_path, tmp_path / "out")
+    task = sweep.task_name(SPEC['tasks'][0])
+    assert calls == [('attention', task, 2), ('conv', task, 2)]
+
+
+def test_rows_without_a_config_hash_are_stale(tmp_path, monkeypatch, capsys):
+    """Rows from before config hashes can't show which settings they ran with, so they are rerun."""
+    spec_path = write_spec(tmp_path)
+    run_sweep(monkeypatch, spec_path, tmp_path / "out")
+    rows = read_rows(tmp_path / "out")
+    assert all(len(r['config_hash']) == 16 for r in rows)
+    (tmp_path / "out" / "results.jsonl").write_text(
+        "".join(json.dumps({k: v for k, v in r.items() if k != 'config_hash'}) + "\n" for r in rows))
+    calls = count_runs(monkeypatch)
+    capsys.readouterr()
+    run_sweep(monkeypatch, spec_path, tmp_path / "out")
+    assert len(calls) == 4 and "ignoring 4 of 4 results rows" in capsys.readouterr().out
+
+
+def test_config_hash_covers_model_training_task_and_seed():
+    task = SPEC['tasks'][0]
+    reference = sweep.run_config_hash(SPEC, 'attention', task, 0)
+    assert sweep.run_config_hash(SPEC, 'attention', dict(task), 0) == reference
+    changed = [
+        sweep.run_config_hash({**SPEC, 'base': {**SPEC['base'], 'intermediate_size': 128}}, 'attention', task, 0),
+        sweep.run_config_hash({**SPEC, 'budget': {}}, 'attention', task, 0),
+        sweep.run_config_hash({**SPEC, 'train': {**SPEC['train'], 'learning_rate': 3e-3}}, 'attention', task, 0),
+        sweep.run_config_hash(SPEC, 'attention', {**task, 'steps': 4}, 0),
+        sweep.run_config_hash(SPEC, 'attention', {**task, 'eval_examples': 16}, 0),
+        sweep.run_config_hash(SPEC, 'attention', {**task, 'args': {**task['args'], 'seq_len': 32}}, 0),
+        sweep.run_config_hash(SPEC, 'conv', task, 0),
+        sweep.run_config_hash(SPEC, 'attention', task, 1),
+    ]
+    assert len({reference, *changed}) == len(changed) + 1
+
+
+def test_lm_tasks_are_named_by_their_seq_len():
+    assert sweep.task_name({'task': 'lm', 'seq_len': 128}) == 'lm seq_len=128'
+    assert sweep.task_name({'task': 'lm'}) == 'lm seq_len=256'
+    assert sweep.task_name({'task': 'lm', 'seq_len': 128, 'name': 'ppl'}) == 'ppl'
+
+
+@pytest.mark.parametrize("tasks", [
+    [{'task': 'lm', 'seq_len': 128, 'datasets': ['a']}, {'task': 'lm', 'seq_len': 128, 'datasets': ['b']}],
+    [{'task': 'induction', 'steps': 10}, {'task': 'induction', 'steps': 20}],
+    [{'task': 'induction', 'name': 'x'}, {'task': 'mqar', 'name': 'x'}],
+])
+def test_tasks_sharing_a_name_are_rejected(tmp_path, tasks):
+    """Two lm tasks at seq_len 128 and 512 were both 'lm', and the second trained on the first's data."""
+    with pytest.raises(ValueError, match="distinct 'name'"):
+        sweep.load_spec(write_spec(tmp_path, {**SPEC, 'tasks': tasks}))
+    named = [{**task, 'name': f"task {i}"} for i, task in enumerate(tasks)]
+    sweep.load_spec(write_spec(tmp_path, {**SPEC, 'tasks': named}))
 
 
 def test_param_budget_reaches_every_architecture():

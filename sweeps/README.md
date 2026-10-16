@@ -35,8 +35,17 @@ Output goes to `scratch/sweeps/<name>/` (or `--output-dir`):
 | File | Contents |
 |------|----------|
 | `results.md`, `results.csv` | One row per architecture: layer types, non-embedding parameters, forward MFLOP/token, and per task the held-out example accuracy (or validation perplexity for `lm`), mean ± std over seeds |
-| `results.jsonl` | One line per finished run, with every metric (`results.shardI-of-N.jsonl` per shard). An interrupted sweep skips these runs when restarted; `--force` reruns all |
+| `results.jsonl` | One line per finished run, with every metric and a `config_hash` of the run's settings (`results.shardI-of-N.jsonl` per shard). An interrupted sweep skips these runs when restarted; `--force` reruns all |
 | `run_info.json` | The spec, command, git commit and versions |
+
+A run counts as finished only if a line's `config_hash` matches the run the
+spec asks for now: a hash of the architecture's model settings (`base`,
+`budget` and its own), the training settings and steps, the task's entry and
+the seed. So after editing a spec, rerunning it reruns exactly what changed
+(adding a seed runs only the new seed), and the table leaves out the old
+lines. They stay in the files, and the sweep prints how many it ignored; lines
+written before hashes existed count as stale too. Use a new `--output-dir` (or
+delete the files) to drop them.
 
 ## Spec format
 
@@ -64,10 +73,14 @@ tasks:
     seq_len: 256
     validation_docs: 200
     steps: 2000
-    name: wikitext ppl         # optional column name
+    name: wikitext ppl         # optional column name; default: the task and its args ("lm seq_len=256" for lm)
 seeds: [0, 1, 2]
 train: {batch_size: 64, learning_rate: 1e-3}   # defaults for every task; bf16: true for bfloat16 autocast on GPU
 ```
+
+Results are keyed by task name, so names must be unique: two tasks that differ
+only in something the default name leaves out (their steps, or an lm task's
+datasets) need a `name` each, and the spec is refused otherwise.
 
 Budgets size each block's SwiGLU FFN (see `param_matched_ffn_hidden_sizes` and
 `flop_matched_ffn_hidden_sizes` in `custom_architectures.py`), so architectures

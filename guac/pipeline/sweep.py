@@ -35,6 +35,11 @@ Usage:
 Results go to scratch/sweeps/<name>/ (or --output-dir): results.jsonl gets one
 line per finished run, so an interrupted sweep resumes where it stopped (pass
 --force to rerun everything), and results.md / results.csv hold the table.
+Each line stores a hash of its run's settings (model, training, task, seed),
+and only lines matching the current spec count as done or reach the table, so
+editing the spec reruns what it changed; the others are reported as stale.
+Task columns are named by the task's 'name', or else its type and arguments
+(an lm task's seq_len); names must be unique.
 
 To spread a sweep over several jobs (jobscripts/sweep.sbatch), give each one
 --shard I/N: it runs every Nth run starting at I and writes its own
@@ -46,6 +51,7 @@ finished runs, and --summarize rebuilds the table from them. --param-match or
 import argparse
 import csv
 import glob
+import hashlib
 import json
 import os
 import statistics
@@ -80,14 +86,21 @@ def load_spec(path: str) -> Dict[str, Any]:
     for task in spec['tasks']:
         if task.get('task') not in (*TASKS, 'lm'):
             raise ValueError(f"Unknown sweep task {task.get('task')!r}; choose from {[*TASKS, 'lm']}")
+    names = [task_name(task) for task in spec['tasks']]
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        raise ValueError(f"Tasks {repeated} appear more than once in {path}; results are keyed by task name, "
+                         "so give each of them a distinct 'name'")
     return spec
 
 
 def task_name(task: Dict[str, Any]) -> str:
-    """A task's column name: its 'name', or the task plus its arguments."""
+    """A task's column name: its 'name', or the task plus its arguments (an lm task's seq_len)."""
     if task.get('name'):
         return task['name']
-    args = task.get('args') or {}
+    args = dict(task.get('args') or {})
+    if task['task'] == 'lm':
+        args = {'seq_len': task_seq_len(task)}
     return task['task'] + (''.join(f" {k}={v}" for k, v in sorted(args.items())) if args else '')
 
 
@@ -129,6 +142,50 @@ def load_lm_data(task: Dict[str, Any]) -> Tuple[Any, torch.Tensor, torch.Tensor]
     return tokenizer, torch.tensor(train['input_ids']), torch.tensor(validation['input_ids'])
 
 
+def train_settings(spec: Dict[str, Any], task: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
+    """A task's training settings (the spec's train, then the task's own) and its step count."""
+    train = {**(spec.get('train') or {}), **{k: task[k] for k in TRAIN_KEYS if k in task}}
+    return train, task.get('steps', spec.get('steps', 1000))
+
+
+def run_config_hash(spec: Dict[str, Any], arch_name: str, task: Dict[str, Any], seed: int) -> str:
+    """
+    A hash of everything that sets one run's result: the architecture's model
+    settings (base, budget and its own), the training settings and steps, the
+    task's entry and the seed. Results rows store it, so a run counts as done
+    only while the spec still asks for exactly that run.
+    """
+    train, steps = train_settings(spec, task)
+    run = {'model': architecture_settings(spec, arch_name), 'train': train, 'steps': steps, 'task': task,
+           'seed': seed}
+    return hashlib.sha256(json.dumps(run, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def all_runs(spec: Dict[str, Any]) -> List[Tuple[Dict[str, Any], str, int]]:
+    """Every (task, architecture, seed) the spec asks for, in the order they run."""
+    return [(task, arch_name, seed) for task in spec['tasks'] for arch_name in spec['architectures']
+            for seed in spec.get('seeds', [0])]
+
+
+def current_rows(spec: Dict[str, Any], rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    The rows of runs the spec asks for now (one per run; the last if repeated),
+    and how many rows are stale: written for other settings, or before rows had a config_hash.
+    """
+    wanted = {run_config_hash(spec, arch_name, task, seed) for task, arch_name, seed in all_runs(spec)}
+    kept = {row['config_hash']: row for row in rows if row.get('config_hash') in wanted}
+    stale = sum(1 for row in rows if row.get('config_hash') not in wanted)
+    return list(kept.values()), stale
+
+
+def warn_about_stale_rows(spec: Dict[str, Any], rows: List[Dict[str, Any]], output_dir: str) -> None:
+    _, stale = current_rows(spec, rows)
+    if stale:
+        print(f"Warning: ignoring {stale} of {len(rows)} results rows in {output_dir}: they were written for "
+              "other settings than the spec's (or by a sweep.py without config hashes). They stay in the "
+              "results files; use another --output-dir, or remove the files, to drop them.")
+
+
 def run_one(spec, arch_name: str, task: Dict[str, Any], seed: int, lm_data) -> Dict[str, Any]:
     settings = architecture_settings(spec, arch_name)
     seq_len = task_seq_len(task)
@@ -143,8 +200,7 @@ def run_one(spec, arch_name: str, task: Dict[str, Any], seed: int, lm_data) -> D
     torch.manual_seed(seed)
     model_config = build_model_config(settings, vocab_size, tokenizer)
     model = MixedLayerForCausalLM(model_config)
-    train = {**(spec.get('train') or {}), **{k: task[k] for k in TRAIN_KEYS if k in task}}
-    steps = task.get('steps', spec.get('steps', 1000))
+    train, steps = train_settings(spec, task)
     print(f"\n=== {arch_name} | {task_name(task)} | seed {seed} | {model.num_parameters():,} parameters ===")
 
     if task['task'] == 'lm':
@@ -159,7 +215,7 @@ def run_one(spec, arch_name: str, task: Dict[str, Any], seed: int, lm_data) -> D
 
     return {
         'architecture': arch_name, 'layer_types': model_config.layer_types, 'task': task_name(task), 'seed': seed,
-        'parameters': model.num_parameters(),
+        'config_hash': run_config_hash(spec, arch_name, task, seed), 'parameters': model.num_parameters(),
         'non_embedding_parameters': model.num_parameters() - model_config.vocab_size * model_config.hidden_size,
         'flops_per_token': model_flops_per_token(model_config, seq_len), 'seq_len': seq_len,
         'ffn_hidden_sizes': model_config.ffn_hidden_sizes, **metric,
@@ -168,7 +224,11 @@ def run_one(spec, arch_name: str, task: Dict[str, Any], seed: int, lm_data) -> D
 
 
 def summarize(spec, rows: List[Dict[str, Any]], output_dir: str) -> str:
-    """Write results.md and results.csv: one row per architecture, one column per task (mean over seeds)."""
+    """
+    Write results.md and results.csv: one row per architecture, one column per
+    task (mean over seeds). Only rows of runs the spec asks for now count (see current_rows).
+    """
+    rows, _ = current_rows(spec, rows)
     tasks = [task_name(t) for t in spec['tasks']]
     lines = [f"# Sweep: {spec['name']}", ""]
     budget = spec.get('budget') or {}
@@ -286,7 +346,9 @@ def main():
     output_dir = args.output_dir or os.path.join(project_root, 'scratch', 'sweeps', spec['name'])
     os.makedirs(output_dir, exist_ok=True)
     if args.summarize:
-        print(summarize(spec, read_results(output_dir), output_dir))
+        rows = read_results(output_dir)
+        warn_about_stale_rows(spec, rows, output_dir)
+        print(summarize(spec, rows, output_dir))
         return
     if args.force:
         for path in glob.glob(os.path.join(output_dir, 'results*.jsonl')):
@@ -294,14 +356,14 @@ def main():
     index, count = args.shard or (0, 1)
     results_path = os.path.join(output_dir, f'results.shard{index}-of-{count}.jsonl' if args.shard
                                 else 'results.jsonl')
-    finished = {(r['architecture'], r['task'], r['seed']) for r in read_results(output_dir)}
+    rows = read_results(output_dir)
+    warn_about_stale_rows(spec, rows, output_dir)
+    finished = {row['config_hash'] for row in current_rows(spec, rows)[0]}
     write_run_info(output_dir, 'sweep', spec, args, seed=None, spec_path=os.path.abspath(args.spec))
 
-    runs = [(task, arch_name, seed) for task in spec['tasks'] for arch_name in spec['architectures']
-            for seed in spec.get('seeds', [0])][index::count]
     lm_data = {}
-    for task, arch_name, seed in runs:
-        if (arch_name, task_name(task), seed) in finished:
+    for task, arch_name, seed in all_runs(spec)[index::count]:
+        if run_config_hash(spec, arch_name, task, seed) in finished:
             continue
         if task['task'] == 'lm' and task_name(task) not in lm_data:
             # Shards share the tokenization cache; the first to arrive fills it while the others wait
