@@ -503,6 +503,8 @@ class MixedLayerConfig(PretrainedConfig):
         mamba_headdim=64,
         mamba_ngroups=1,
         mamba_chunk_size=64,  # Scan chunk length; affects speed and memory, not results
+        # "torch" (any device) or "mamba_ssm" (its fused kernel for CUDA inputs; needs the package)
+        mamba_scan_impl="torch",
         # BASED linear attention parameters (Arora et al. 2024)
         based_feature_dim=16,            # Query/key size per head before the Taylor feature map
         based_num_key_value_heads=None,  # Defaults to num_kv_heads
@@ -545,6 +547,7 @@ class MixedLayerConfig(PretrainedConfig):
         self.mamba_headdim = mamba_headdim
         self.mamba_ngroups = mamba_ngroups
         self.mamba_chunk_size = mamba_chunk_size
+        self.mamba_scan_impl = mamba_scan_impl
 
         # BASED parameters - default to main attention config if None
         self.based_feature_dim = based_feature_dim
@@ -730,6 +733,7 @@ class ConfigMamba2Mixer(Mamba2Mixer):
             headdim=config.mamba_headdim,
             ngroups=config.mamba_ngroups,
             chunk_size=config.mamba_chunk_size,
+            scan_impl=config.mamba_scan_impl,
         )
 
     def forward(self, hidden_states, attention_mask=None):

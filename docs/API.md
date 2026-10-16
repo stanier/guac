@@ -52,6 +52,7 @@ class MixedLayerConfig(PretrainedConfig):
 - `ffn_types` (List[str]): FFN for each layer: `"swiglu"`, `"moe"` or `"none"`. Defaults to `"moe"` for `shared_expert_moe` and `"swiglu"` elsewhere
 - `ffn_hidden_sizes` (List[int]): SwiGLU width for each layer. Defaults to 2/3 of `intermediate_size`
 - `mamba_d_state` (int): State space dimension for Mamba-2 layers
+- `mamba_scan_impl` (str): `"torch"` (default, any device) or `"mamba_ssm"` (mamba_ssm's fused kernel for CUDA inputs)
 - `mamba_expand` (float): Expansion factor for Mamba-2 internal dimension
 - `based_feature_dim` (int): Query/key size per head in BASED layers, before the Taylor feature map expands it to 1 + f + f²
 - `sliding_window_size` (int): Positions each token sees in `sliding_window_attention` layers, itself included

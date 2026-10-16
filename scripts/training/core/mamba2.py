@@ -11,6 +11,11 @@ The scan is plain PyTorch, so it runs on any device: attention-like work
 inside chunks of chunk_size tokens, plus a linear recurrence over chunk states
 between chunks. It computes exactly the sequential recurrence for any chunk
 size; the chunk size only trades memory against speed.
+
+With scan_impl="mamba_ssm", CUDA inputs go through mamba_ssm's fused Triton
+kernel (mamba_chunk_scan_combined) instead; CPU inputs still use the PyTorch
+scan. The kernel computes the same function (test_mamba2.py compares the two
+when a GPU and mamba_ssm are available).
 """
 
 import math
@@ -18,6 +23,18 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+SCAN_IMPLS = ("torch", "mamba_ssm")
+
+
+def load_mamba_ssm_scan():
+    """mamba_ssm's fused chunked scan, or an ImportError explaining how to get it."""
+    try:
+        from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+    except ImportError as e:
+        raise ImportError("mamba_scan_impl='mamba_ssm' needs the mamba_ssm package (pip install mamba-ssm, "
+                          "which needs a CUDA toolchain)") from e
+    return mamba_chunk_scan_combined
 
 
 def segment_sum(x: torch.Tensor) -> torch.Tensor:
@@ -122,8 +139,11 @@ class Mamba2Mixer(nn.Module):
     def __init__(self, hidden_size: int, d_state: int = 128, d_conv: int = 4, expand: int = 2,
                  headdim: int = 64, ngroups: int = 1, chunk_size: int = 64,
                  dt_min: float = 0.001, dt_max: float = 0.1, dt_init_floor: float = 1e-4,
-                 A_init_range: tuple = (1.0, 16.0), norm_eps: float = 1e-5):
+                 A_init_range: tuple = (1.0, 16.0), norm_eps: float = 1e-5, scan_impl: str = "torch"):
         super().__init__()
+        if scan_impl not in SCAN_IMPLS:
+            raise ValueError(f"Unknown Mamba-2 scan_impl {scan_impl!r}; choose from {SCAN_IMPLS}")
+        self.kernel_scan = load_mamba_ssm_scan() if scan_impl == "mamba_ssm" else None
         self.d_inner = int(expand * hidden_size)
         if self.d_inner % headdim:
             raise ValueError(f"Mamba-2 inner size {self.d_inner} (expand * hidden_size) must be divisible by headdim {headdim}")
@@ -159,11 +179,21 @@ class Mamba2Mixer(nn.Module):
         xbc = F.silu(self.conv1d(xbc.transpose(1, 2))[..., :length].transpose(1, 2))
         x, b, c = torch.split(xbc, [self.d_inner, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
 
+        x = x.reshape(batch, length, self.nheads, self.headdim)
+        b = b.reshape(batch, length, self.ngroups, self.d_state)
+        c = c.reshape(batch, length, self.ngroups, self.d_state)
+
+        if self.kernel_scan is not None and hidden_states.is_cuda:
+            # The fused kernel takes raw dt, grouped B/C and D, and computes the same y as below
+            y = self.kernel_scan(x, dt, -torch.exp(self.A_log.float()), b, c, self.chunk_size,
+                                 D=self.D, dt_bias=self.dt_bias, dt_softplus=True)
+            y = y.reshape(batch, length, self.d_inner)
+            return self.out_proj(self.norm(y, z))
+
         # Head h reads group h // (nheads / ngroups)
         heads_per_group = self.nheads // self.ngroups
-        x = x.reshape(batch, length, self.nheads, self.headdim)
-        b = b.reshape(batch, length, self.ngroups, self.d_state).repeat_interleave(heads_per_group, dim=2)
-        c = c.reshape(batch, length, self.ngroups, self.d_state).repeat_interleave(heads_per_group, dim=2)
+        b = b.repeat_interleave(heads_per_group, dim=2)
+        c = c.repeat_interleave(heads_per_group, dim=2)
 
         # The scan's exponentials and cumulative sums need at least float32, even under mixed precision
         scan_dtype = torch.promote_types(x.dtype, torch.float32)

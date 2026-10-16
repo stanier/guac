@@ -109,3 +109,46 @@ def test_config_rejects_inner_size_not_divisible_by_headdim():
     with pytest.raises(ValueError, match="divisible by mamba_headdim"):
         MixedLayerConfig(hidden_size=48, num_attention_heads=4, num_hidden_layers=1,
                          layer_types=["mamba2"], mamba_headdim=64)
+
+
+def test_unknown_scan_impl_is_rejected():
+    with pytest.raises(ValueError, match="scan_impl"):
+        Mamba2Mixer(64, headdim=16, scan_impl="cuda")
+
+
+def mamba_ssm_available():
+    try:
+        import mamba_ssm  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(mamba_ssm_available(), reason="mamba_ssm is installed")
+def test_kernel_scan_without_mamba_ssm_explains_how_to_get_it():
+    with pytest.raises(ImportError, match="pip install mamba-ssm"):
+        Mamba2Mixer(64, headdim=16, scan_impl="mamba_ssm")
+
+
+@pytest.mark.skipif(not (torch.cuda.is_available() and mamba_ssm_available()),
+                    reason="needs a CUDA GPU and the mamba_ssm package")
+@pytest.mark.parametrize("ngroups, length", [(1, 256), (2, 100)])
+def test_kernel_scan_matches_torch_scan(ngroups, length):
+    """mamba_ssm's fused kernel and the PyTorch scan compute the same mixer (values and gradients)."""
+    torch.manual_seed(0)
+    reference = Mamba2Mixer(256, d_state=64, headdim=32, ngroups=ngroups, chunk_size=64).cuda()
+    kernel = Mamba2Mixer(256, d_state=64, headdim=32, ngroups=ngroups, chunk_size=64, scan_impl="mamba_ssm").cuda()
+    kernel.load_state_dict(reference.state_dict())
+
+    x = torch.randn(2, length, 256, device="cuda")
+    outputs, grads = [], []
+    for mixer in (reference, kernel):
+        x_in = x.clone().requires_grad_()
+        y = mixer(x_in)
+        y.pow(2).mean().backward()
+        outputs.append(y.detach())
+        grads.append((x_in.grad, mixer.A_log.grad, mixer.in_proj.weight.grad))
+
+    torch.testing.assert_close(outputs[1], outputs[0], atol=2e-3, rtol=2e-3)
+    for g_kernel, g_reference in zip(grads[1], grads[0]):
+        torch.testing.assert_close(g_kernel, g_reference, atol=2e-3, rtol=2e-3)

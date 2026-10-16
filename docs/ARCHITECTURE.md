@@ -137,6 +137,14 @@ mixed precision. Parameter names follow the reference implementations
 (mamba_ssm, transformers' `Mamba2Mixer`), and outputs are tested against
 transformers' version.
 
+**GPU kernel (optional)**: with `mamba_scan_impl: mamba_ssm`, CUDA inputs go
+through `mamba_ssm`'s fused `mamba_chunk_scan_combined` instead of the PyTorch
+scan (CPU inputs still use the PyTorch scan, so the same checkpoint runs
+anywhere). It takes the same parameters, so checkpoints are interchangeable.
+`tests/test_mamba2.py` compares the two, but that test only runs with a GPU
+and `mamba_ssm` installed, so it hasn't been run yet. The default stays `torch`
+until it has.
+
 **Characteristics**:
 - **Complexity**: O(L·Q·(N+P)) per head for the scan, with chunk length Q, state size N, head size P
 - **Memory**: O(N·P) state per head at inference; linear in L during training
@@ -287,6 +295,7 @@ mamba_expand: 2           # Inner size = expand * hidden_size
 mamba_headdim: 64         # Head size P; inner size must be divisible by it
 mamba_ngroups: 1          # B/C groups shared across heads (heads must divide evenly)
 mamba_chunk_size: 64      # Scan chunk length: speed/memory only, results are identical
+mamba_scan_impl: torch    # or mamba_ssm: its fused Triton kernel for CUDA inputs (needs the package)
 
 # BASED parameters
 based_feature_dim: 16     # Query/key size per head before the Taylor feature map

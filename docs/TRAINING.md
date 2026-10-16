@@ -170,6 +170,7 @@ mamba_expand: 2            # Inner size = expand * hidden_size
 mamba_headdim: 64          # Head size; inner size must be divisible by it
 mamba_ngroups: 1           # B/C groups shared across heads
 mamba_chunk_size: 64       # Scan chunk length (speed/memory only)
+mamba_scan_impl: torch     # or mamba_ssm (fused kernel on CUDA; pip install mamba-ssm)
 
 # BASED configuration
 based_feature_dim: 16      # Query/key size per head before the Taylor feature map
