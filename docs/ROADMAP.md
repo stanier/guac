@@ -255,6 +255,12 @@ What the table shows, at this small budget:
   the same 2-layer model reaches 100% on induction by step 2,000.
 - These are one seed of 1,500 to 3,000 CPU steps; read them as a check that the
   harness discriminates, not as findings.
+- **After the second audit**, rerunning the same spec for three rows (one seed)
+  gives mamba2 **96.0%** on MQAR (was 0.4%) and 22.3% on induction (was 3.8%);
+  based 0.0% / 69.6% and conv 0.0% / 2.8% barely move. Mamba-2's conv init and
+  weight decay changed (and the diagnostic data, through the new seeds), so the
+  table above understates Mamba-2; the other rows predate the fixes too, and
+  the whole table is worth rerunning.
 
 ## Behavior Changes to Keep in Mind
 
