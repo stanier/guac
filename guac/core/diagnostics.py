@@ -285,22 +285,37 @@ def train_and_evaluate(model, next_batch: Callable[[int], Dict[str, torch.Tensor
     }
 
 
+def eval_seed(seed: int) -> int:
+    """
+    The data seed of a run's held-out set. Held-out seeds are even and training
+    seeds (train_seed) odd, so no training batch is ever the held-out set. (They
+    were 10_000 + seed and seed * 1_000_003 + step, so seed 0's batch at step
+    10_000 was the held-out set itself.)
+    """
+    return 2 * seed
+
+
+def train_seed(seed: int, step: int) -> int:
+    """The data seed of a run's training batch at `step`: odd, so never a held-out seed (see eval_seed)."""
+    return 2 * (seed * 1_000_003 + step) + 1
+
+
 def run_diagnostic(model, task: str, task_kwargs: Optional[Dict[str, Any]] = None, steps: int = 2000,
                    batch_size: int = 64, eval_examples: int = 1000, seed: int = 0,
                    **train_kwargs) -> Dict[str, Any]:
     """
     Train model on fresh batches of a task for `steps` steps and evaluate on a
-    fixed held-out set drawn with a different seed (see train_and_evaluate for
-    the optimizer and the other keyword arguments).
+    fixed held-out set drawn from seeds training never uses (see eval_seed; see
+    train_and_evaluate for the optimizer and the other keyword arguments).
 
     Returns the final evaluation (loss on answer tokens, token and example
     accuracy), the best example accuracy over all evaluations, the training
     loss and the wall time.
     """
     task_kwargs = dict(task_kwargs or {})
-    eval_data = make_batch(task, eval_examples, seed=10_000 + seed, **task_kwargs)
+    eval_data = make_batch(task, eval_examples, seed=eval_seed(seed), **task_kwargs)
     results = train_and_evaluate(
-        model, lambda step: make_batch(task, batch_size, seed=seed * 1_000_003 + step, **task_kwargs),
+        model, lambda step: make_batch(task, batch_size, seed=train_seed(seed, step), **task_kwargs),
         lambda m: evaluate(m, eval_data), steps, **train_kwargs,
     )
     accuracies = [entry['example_accuracy'] for entry in results['history']] + [results['eval']['example_accuracy']]

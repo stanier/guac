@@ -16,8 +16,10 @@ import torch
 from guac.core.custom_architectures import (
     MixedLayerConfig, MixedLayerForCausalLM, no_weight_decay_parameter_names,
 )
+from guac.core import diagnostics
 from guac.core.diagnostics import (
-    IGNORE, TASKS, answer_accuracy, make_batch, parameter_groups, run_diagnostic, run_language_modeling,
+    IGNORE, TASKS, answer_accuracy, eval_seed, make_batch, parameter_groups, run_diagnostic,
+    run_language_modeling, train_seed,
 )
 from guac.pipeline.run_diagnostics import diagnostic_model_config, parse_assignments
 
@@ -104,6 +106,28 @@ def test_run_diagnostic_trains_and_reports():
     assert set(results['eval']) == {'loss', 'token_accuracy', 'example_accuracy'}
     assert results['parameters'] == model.num_parameters()
     assert results['best_example_accuracy'] >= results['eval']['example_accuracy']
+
+
+def test_training_batches_never_use_a_held_out_seed():
+    """Held-out seeds were 10_000 + seed, and seed 0's training batch at step 10_000 used that same seed."""
+    held_out = {eval_seed(seed) for seed in range(-3, 50)}
+    for seed in range(-3, 50):
+        assert held_out.isdisjoint(train_seed(seed, step) for step in range(20_000))
+
+
+def test_run_diagnostic_draws_training_and_held_out_data_from_those_seeds(monkeypatch):
+    seeds = []
+
+    def recording_make_batch(task, num_examples, seed, **kwargs):
+        seeds.append(seed)
+        return make_batch(task, num_examples, seed, **kwargs)
+
+    monkeypatch.setattr(diagnostics, 'make_batch', recording_make_batch)
+    config = MixedLayerConfig(vocab_size=64, hidden_size=32, num_attention_heads=4, num_hidden_layers=1,
+                              layer_types=["conv"], intermediate_size=64)
+    run_diagnostic(MixedLayerForCausalLM(config), 'induction', dict(seq_len=16), steps=3, batch_size=4,
+                   warmup_steps=1, eval_examples=8, seed=7, device='cpu', log=lambda _: None)
+    assert seeds == [eval_seed(7)] + [train_seed(7, step) for step in range(3)]
 
 
 def test_weight_decay_skips_biases_norms_and_mamba2_dynamics():
